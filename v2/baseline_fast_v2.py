@@ -41,7 +41,7 @@ def make_env(rank, env_conf, seed=0):
 if __name__ == "__main__":
 
     use_wandb_logging = True
-    ep_length = 2048 * 200 # Increasing to 8000+ surpasses RAM with 24 CPU
+    ep_length = 512 * 200 # Increasing to 8000+ surpasses RAM with 24 CPU
     sess_id = str(uuid.uuid4())[:8] #str(uuid.uuid4())[:8] // 
     sess_path = Path(f'session_{sess_id}')
 
@@ -51,59 +51,21 @@ if __name__ == "__main__":
     callbacks = [checkpoint_callback, TensorboardCallback(sess_path)]
 
     env_config = {
-                'headless': True, 'save_final_state': False, 'early_stop': False, ## Set headless false to display the environments
+                'headless': False, 'save_final_state': False, 'early_stop': False, ## Set headless false to display the environments
                 'action_freq': 24, 'init_state': '../Bulbasaur.state', 'max_steps': ep_length, 
                 'print_rewards': True, 'save_video': False, 'fast_video': True, 'session_path': sess_path,
-                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 1, 'explore_weight': 0.03
+                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 1, 'explore_weight': 0.05,
+                'infinite_money': True, 'disable_wild_encounters': ['MT_MOON_1F', 'MT_MOON_B1F', 'MT_MOON_B2F']
             }
 
-    class WandbCallback(BaseCallback):
-        def __init__(self, verbose=0):
-            super(WandbCallback, self).__init__(verbose)
-            self.start_time = None
-
-        def _on_training_start(self) -> None:
-            # Record the start time at the beginning of training
-            self.start_time = time.time()
-
-        def _on_step(self) -> bool:
-            # Log metrics from all environments every 100 steps
-            if self.n_calls % 100 == 0:  # Log every 100 steps
-                # Calculate the steps per second
-                elapsed_time = time.time() - self.start_time
-                steps_per_second = self.num_timesteps / elapsed_time if elapsed_time > 0 else 0
-
-                # Collect reward information from all environments
-                rewards_list = self.training_env.get_attr("get_game_state_reward")
-
-                # Iterate over each environment and aggregate its reward metrics
-                reward_data = {"total_timesteps": self.num_timesteps, "steps_per_second": steps_per_second}
-                for i, rewards in enumerate(rewards_list):
-                    if callable(rewards):
-                        rewards = rewards()
-                    
-                    # Collect rewards data
-                    reward_data.update({
-                        f'env_{i}_event_reward': rewards['event'],
-                        f'env_{i}_level_reward': rewards['level'],
-                        f'env_{i}_badge_reward': rewards['badge'],
-                        f'env_{i}_explore_reward': rewards['explore'],
-                        f'env_{i}_captured_reward': rewards['captured'],
-                    })
-                
-                # Perform logging from the main process only
-                wandb.log(**{f'environment/{k}': v for k, v in reward_data.items()})
-
-            return True
-    
     print(env_config)
     
-    num_cpu = 16  # Also sets the number of episodes per training iteration
+    num_cpu = 4  # Also sets the number of episodes per training iteration
     env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
     
     if use_wandb_logging:
         import wandb
-        #from wandb.integration.sb3 import WandbCallback ## remove when new system works
+        from wandb.integration.sb3 import WandbCallback ## remove when new system works
         wandb.tensorboard.patch(root_logdir=str(sess_path))
         run = wandb.init(
             entity="GamingReinforcementLearning",
@@ -119,7 +81,7 @@ if __name__ == "__main__":
     #env_checker.check_env(env)
 
     # put a checkpoint here you want to start from
-    file_name = "session_7edf7249/poke_40304640_steps" # <- a cerulean checkpoint
+    file_name = "session_dd7cbeb7/poke_5120000_steps"#"session_7edf7249/poke_37355520_steps" # <- a cerulean checkpoint
 
     train_steps_batch = ep_length // 200
     

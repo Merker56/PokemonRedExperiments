@@ -13,9 +13,8 @@ from gymnasium import Env, spaces
 from pyboy.utils import WindowEvent
 
 from global_map import local_to_global, GLOBAL_MAP_SHAPE
+from map_lookup import MapIds
 
-import time
-import wandb
 
 event_flags_start = 0xD747
 event_flags_end = 0xD7F6 # 0xD761 # 0xD886 temporarily lower event flag range for obs input
@@ -56,6 +55,18 @@ class RedGymEnv(Env):
                 40, 0, 12, 1, 13, 51, 2, 54, 14, 59, 60, 61, 15, 3, 65
             ])
         }
+        if isinstance(config["disable_wild_encounters"], bool): 
+            self.disable_wild_encounters = config["disable_wild_encounters"]
+            self.setup_disable_wild_encounters_maps = set([])
+        elif isinstance(config["disable_wild_encounters"], list):
+            self.disable_wild_encounters = len(config["disable_wild_encounters"]) > 0
+            self.disable_wild_encounters_maps = {
+                MapIds[item].name for item in config["disable_wild_encounters"] ## Need to find MapIds
+            }
+        else:
+            raise ValueError("Disable wild enounters must be a boolean or a list of MapIds")
+        self.infinite_money = config["infinite_money"]
+
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
@@ -229,6 +240,18 @@ class RedGymEnv(Env):
 
         new_reward = self.update_reward()
 
+        if (
+            self.disable_wild_encounters
+            and self.read_m(0xD35E) in self.disable_wild_encounters_maps
+        ):
+            self.pyboy.set_memory_value(0xD887, 0X00)
+        if (
+            self.infinite_money
+            and self.step_count % 50 == 0
+        ):
+            self.pyboy.set_memory_value(0xD347, 0x01)
+         
+
         self.last_health = self.read_hp_fraction()
 
         self.last_power = self.get_low_power_moves()
@@ -358,6 +381,7 @@ class RedGymEnv(Env):
         )
 
     def get_game_coords(self):
+        ### D35E is the map location in map_lookup
         return (self.read_m(0xD362), self.read_m(0xD361), self.read_m(0xD35E))
 
     def update_seen_coords(self):
@@ -483,6 +507,9 @@ class RedGymEnv(Env):
 
     def read_m(self, addr):
         return self.pyboy.get_memory_value(addr)
+    
+    def set_m(self, addr, val):
+        return self.pyboy.set_memory_value(addr, val)
 
     def read_bit(self, addr, bit: int) -> bool:
         # add padding so zero will read '0b100000000' instead of '0b0'
@@ -570,6 +597,26 @@ class RedGymEnv(Env):
         SEEN_POKE_ADDR = range(0xD30A, 0xD31D)
         num_seen = [self.read_m(a) for a in SEEN_POKE_ADDR]
         return max(sum([self.bit_count(n) for n in num_seen]), 0)
+
+    def setup_disable_wild_encounters(self):
+        bank, addr = self.pyboy.symbol_lookup("TryDoWildEncounter.gotWildEncounterType")
+        self.pyboy.hook_register(
+            bank,
+            addr + 8,
+            self.disable_wild_encounter_hook,
+            None,
+        )
+
+    def disable_wild_encounter_hook(self, *args, **kwargs):
+        if (
+            self.disable_wild_encounters
+            and self.read_m(0xD35E) not in self.disable_wild_encounters_maps
+        ):
+            self.pyboy.set_memory_value(0xD887, 0X00)
+
+    def setup_enable_wild_ecounters(self):
+        bank, addr = self.pyboy.symbol_lookup("TryDoWildEncounter.gotWildEncounterType")
+        self.pyboy.hook_deregister(bank, addr)
     
     def check_in_menus(self):
         if self.read_m(0xD803) == 0 and self.read_m(0xD057) == 0 and self.read_m(0xCF13) == 0:
@@ -656,6 +703,13 @@ class RedGymEnv(Env):
                 self.total_healing_rew += heal_amount
             else:
                 self.died_count += 1
+                if (
+                    self.disable_wild_encounters
+                ):
+                    self.pyboy.set_memory_value(0xD887, 0X0A)
+
+                #for _ in range(200):
+                #    self.seen_coords.popitem()
 
     def read_hp_fraction(self):
         hp_sum = sum([
