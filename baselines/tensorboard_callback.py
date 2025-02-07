@@ -6,6 +6,7 @@ from stable_baselines3.common.logger import Image
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from einops import rearrange, reduce
+import wandb
 
 def merge_dicts(dicts):
     sum_dict = {}
@@ -28,10 +29,11 @@ def merge_dicts(dicts):
 
 class TensorboardCallback(BaseCallback):
 
-    def __init__(self, log_dir, verbose=0):
+    def __init__(self, log_dir, log_freq = 100, verbose=0):
         super().__init__(verbose)
         self.log_dir = log_dir
         self.writer = None
+        self.log_freq = log_freq
 
     def _on_training_start(self):
         if self.writer is None:
@@ -65,6 +67,40 @@ class TensorboardCallback(BaseCallback):
             list_of_flag_dicts = self.training_env.get_attr("current_event_flags_set")
             merged_flags = {k: v for d in list_of_flag_dicts for k, v in d.items()}
             self.logger.record("trajectory/all_flags", json.dumps(merged_flags))
+
+        if self.n_calls % self.log_freq == 0:
+            try:
+                # Get rewards from all environments in the vector
+                run_state_scores = self.training_env.get_attr("progress_reward")
+
+                # Flatten progress rewards into a single list of dicts (one per agent)
+                all_agent_rewards = [stats for stats in run_state_scores if stats]
+
+                # Compute mean values
+                mean_rewards = {key: np.mean([agent[key] for agent in all_agent_rewards if key in agent])
+                                for key in all_agent_rewards[0]}
+
+                # Log rewards per agent
+                reward_logs = {}
+                for agent_idx, rewards in enumerate(all_agent_rewards):
+                    for key, value in rewards.items():
+                        reward_logs[f"agent_{agent_idx}/rewards/{key}"] = value
+
+                # Log mean rewards
+                for key, value in mean_rewards.items():
+                    reward_logs[f"rewards_mean/{key}"] = value
+
+                # Log total mean reward and global step
+                reward_logs["rewards_mean/total"] = sum(mean_rewards.values())
+                reward_logs["global_step"] = self.num_timesteps
+
+                # Log to wandb
+                wandb.log(reward_logs)
+
+            except Exception as e:
+                print(f"Error logging to wandb: {e}")
+                import traceback
+                traceback.print_exc()  # Print full error traceback for debugging
 
         return True
     

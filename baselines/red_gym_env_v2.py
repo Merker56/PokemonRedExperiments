@@ -8,6 +8,7 @@ from pyboy import PyBoy
 #from pyboy.logger import log_level
 import mediapy as media
 from einops import repeat
+from collections import deque 
 
 from gymnasium import Env, spaces
 from pyboy.utils import WindowEvent
@@ -66,7 +67,9 @@ class RedGymEnv(Env):
         else:
             raise ValueError("Disable wild enounters must be a boolean or a list of MapIds")
         self.infinite_money = config["infinite_money"]
-
+        self.recent_coords = deque([0] * 10, maxlen=10)  # Initialize with 10 zeros & Track last 50 positions
+        self.local_area_hashes = set()
+        self.progress_reward = []
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
@@ -114,7 +117,8 @@ class RedGymEnv(Env):
                 "events": spaces.MultiBinary((event_flags_end - event_flags_start) * 8),
                 "map": spaces.Box(low=0, high=255, shape=(
                     self.coords_pad*4,self.coords_pad*4, 1), dtype=np.uint8),
-                "recent_actions": spaces.MultiDiscrete([len(self.valid_actions)] * self.frame_stacks)
+                "recent_actions": spaces.MultiDiscrete([len(self.valid_actions)] * self.frame_stacks),
+                "recent_path": spaces.Box(low=0, high=1e8, shape=(10,), dtype=np.int32),  # Last 10 area hashes
             }
         )
 
@@ -209,6 +213,8 @@ class RedGymEnv(Env):
             self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]
         ])
 
+        recent_path = np.array(self.recent_coords, dtype=np.uint8)  # Last 10 areas
+
         observation = {
             "screens": self.recent_screens,
             "health": np.array([self.read_hp_fraction()]),
@@ -216,7 +222,8 @@ class RedGymEnv(Env):
             "badges": np.array([int(bit) for bit in f"{self.read_m(0xD356):08b}"], dtype=np.int8),
             "events": np.array(self.read_event_bits(), dtype=np.int8),
             "map": self.get_explore_map()[:, :, None],
-            "recent_actions": self.recent_actions
+            "recent_actions": self.recent_actions,
+            "recent_path": np.array(recent_path, dtype=np.int32),
         }
 
         return observation
@@ -387,17 +394,51 @@ class RedGymEnv(Env):
         ### D35E is the map location in map_lookup
         return (self.read_m(0xD362), self.read_m(0xD361), self.read_m(0xD35E))
 
+    def get_local_area_hash(self, x, y):
+        # Cluster coordinates into 8x8 blocks
+        grid_size = 4  # Changed from 8 to 4 for finer granularity
+        return hash((
+            self.read_m(0xD35E),  # Current map ID
+            (x // grid_size), 
+            (y // grid_size)
+        ))
+
     def update_seen_coords(self):
+        x_pos, y_pos, map_n = self.get_game_coords()
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        #window = 500
+        #grace_period = 50
+        #if coord_string in self.seen_coords:
+        #    if grace_period <= self.step_count - self.last_new_step <= window:
+                # Apply a penalty if revisited after the grace period
+        #        self.stuck_penalty -= 0.1
+        #else:
+        #    self.novelty_reward += 0.001 * min((self.step_count - self.last_new_step), window)
+        #    self.last_new_step = self.step_count # This is the problem
+        self.seen_coords[coord_string] = self.step_count
+        
+    def update_exploration_rewards(self):
         x, y, map_n = self.get_game_coords()
-        coord_string = f"x:{x} y:{y} m:{map_n}"
-        stagnation_window = 1000
+        area_hash = self.get_local_area_hash(x, y)
         
-        if coord_string in self.seen_coords:
-            if (self.step_count - self.seen_coords[coord_string]) > stagnation_window:
-                self.stuck_penalty -= 0.005 * (self.step_count - self.seen_coords[coord_string])
+        # Convert hash to positive integer
+        positive_hash = abs(area_hash) % (10**8)  # 8-digit number
+        
+        # First visit reward
+        if positive_hash not in self.local_area_hashes:
+            self.local_area_hashes.add(positive_hash)
+            base_reward = 2.0
         else:
-            self.seen_coords[coord_string] = self.step_count
+            base_reward = 0.0
         
+        # Recent path penalty calculation
+        recent_count = list(self.recent_coords).count(positive_hash)
+        freq_penalty = max(0, 1.0 - (recent_count * 0.3))  # Stronger penalty
+        
+        # Store in recent memory
+        self.recent_coords.append(positive_hash)
+        
+        return base_reward + freq_penalty  
 
     def get_global_coords(self):
         x_pos, y_pos, map_n = self.get_game_coords()
@@ -670,19 +711,16 @@ class RedGymEnv(Env):
     def get_game_state_reward(self, print_stats=True):
         # addresses from https://datacrystal.romhacking.net/wiki/Pok%C3%A9mon_Red/Blue:RAM_map
         # https://github.com/pret/pokered/blob/91dc3c9f9c8fd529bb6e8307b58b96efa0bec67e/constants/event_constants.asm
-        badge_rewards = [0, 100, 200, 300, 400, 600, 800, 1200, 2000]
-        badge_count = self.bit_count(self.read_m(0xD356))
         state_scores = {
             "event": self.reward_scale * self.update_max_event_rew() * 10, ## Increased to 10x to encourage more trainer battles
             "level": self.reward_scale * self.get_levels_reward(),
-            "heal": self.total_healing_rew * 1,  # Reduced multiplier
-            "low_hp": -25 if self.read_hp_fraction() < 0.2 else 0,
+            "heal": self.reward_scale * self.total_healing_rew * 5,
             #"op_lvl": self.reward_scale * self.update_max_op_level() * 0.2,
             "dead": self.reward_scale * self.died_count * -0.01,
-            # Progressive badge rewards (Total: 5,600)
-            "badge": badge_rewards[badge_count] if badge_count < 9 else 0,
-            "explore": min(len(self.seen_coords) * 0.1, 500),  # Capped at 500
-            "stuck": self.reward_scale * self.explore_weight * self.stuck_penalty,## Removing novelty for now + self.novelty_reward,
+            "badge": self.reward_scale * self.get_badges() * 100,
+            "exp": self.reward_scale * self.explore_weight * len(self.seen_coords),
+            "exp_boost": self.update_exploration_rewards(),
+            #"stuck": self.reward_scale * self.explore_weight * self.stuck_penalty,## Removing novelty for now + self.novelty_reward,
             "items": self.reward_scale * self.get_item_reward(), ## Changing to flat increase instead of 0.1
             "seen": self.reward_scale * self.get_pokedex_seen(),
             "cap": self.reward_scale * self.get_pokedex_caught() * 3,

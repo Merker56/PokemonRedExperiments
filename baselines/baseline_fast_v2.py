@@ -48,19 +48,26 @@ if __name__ == "__main__":
     checkpoint_callback = CheckpointCallback(save_freq=ep_length//2, save_path=sess_path,
                                      name_prefix="poke")
     
-    callbacks = [checkpoint_callback, TensorboardCallback(sess_path)]
+    callbacks = [
+    CheckpointCallback(
+        save_freq=ep_length//2,
+        save_path=sess_path,
+        name_prefix="poke"
+    ),
+    TensorboardCallback(log_freq=50, log_dir = sess_path)  # Our custom callback
+]
 
     env_config = {
-                'headless': False, 'save_final_state': False, 'early_stop': False, ## Set headless false to display the environments
+                'headless': True, 'save_final_state': False, 'early_stop': False, ## Set headless false to display the environments
                 'action_freq': 24, 'init_state': '../has_pokedex_nballs.state', 'max_steps': ep_length, 
                 'print_rewards': True, 'save_video': False, 'fast_video': True, 'session_path': sess_path,
-                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 0.8, 'explore_weight': 0.01,
+                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 1, 'explore_weight': 0.1,
                 'infinite_money': True, 'disable_wild_encounters': ['MT_MOON_1F', 'MT_MOON_B1F', 'MT_MOON_B2F']
             }
 
     print(env_config)
     
-    num_cpu = 4  # Also sets the number of episodes per training iteration
+    num_cpu = 48  # Also sets the number of episodes per training iteration
     env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
     
     if use_wandb_logging:
@@ -101,10 +108,6 @@ if __name__ == "__main__":
     print(model.policy)
 
     model.learn(total_timesteps=(ep_length)*num_cpu*100, callback=CallbackList(callbacks), tb_log_name="poke_ppo")
-
-    if use_wandb_logging:
-        wandb.define_metric("rewards/*", step_metric="global_step")
-        wandb.define_metric("badges", step_metric="global_step")
 
     if use_wandb_logging:
         run.finish()
