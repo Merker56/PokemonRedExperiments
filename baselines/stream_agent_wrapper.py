@@ -18,7 +18,7 @@ class StreamWrapper(gym.Wrapper):
         self.loop.run_until_complete(
             self.establish_wc_connection()
         )
-        self.upload_interval = 300
+        self.upload_interval = 120
         self.steam_step_counter = 0
         self.env = env
         self.coord_list = []
@@ -37,7 +37,7 @@ class StreamWrapper(gym.Wrapper):
         self.coord_list.append([x_pos, y_pos, map_n])
 
         if self.steam_step_counter >= self.upload_interval:
-            self.stream_metadata["extra"] = f"coords: {len(self.env.seen_coords)}"
+            self.stream_metadata["extra"] = self.env.get_lead_pokemon_info()
             self.loop.run_until_complete(
                 self.broadcast_ws_message(
                     json.dumps(

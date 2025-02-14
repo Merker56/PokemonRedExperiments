@@ -71,6 +71,13 @@ class RedGymEnv(Env):
         self.local_area_hashes = set()
         self.progress_reward = []
 
+        self.last_position = [0, 0, 0] 
+        self.last_action = []
+        self.directional_reward = 0
+        self.frontier_reward = 0
+        self.path_progress = set()
+        self.last_coord = []
+
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
         self.reward_range = (0, 15000)
@@ -173,6 +180,11 @@ class RedGymEnv(Env):
         self.stuck_penalty = 0
         self.novelty_reward = 0
         self.last_new_step = 0
+        self.last_action = []
+        self.directional_reward = 0
+        self.frontier_reward = 0
+        self.path_progress = set()
+        self.last_coord = []
 
         self.base_event_flags = sum([
                 self.bit_count(self.read_m(i))
@@ -238,8 +250,6 @@ class RedGymEnv(Env):
 
         self.update_recent_actions(action)
 
-        self.update_seen_coords()
-
         self.update_explore_map()
 
         self.update_heal_reward()
@@ -248,7 +258,16 @@ class RedGymEnv(Env):
 
         self.check_in_menus()
 
+        # Compute frontier bonus **before** updating last_action
+        self.get_frontier_bonus()
+
+        # Apply directional persistence **after** frontier_bonus is computed
+        self.update_directional_persistence(action)
+
+        # Compute new reward
         new_reward = self.update_reward()
+
+        self.update_seen_coords()
 
         if (
             self.disable_wild_encounters
@@ -406,24 +425,167 @@ class RedGymEnv(Env):
     def update_seen_coords(self):
         x_pos, y_pos, map_n = self.get_game_coords()
         coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-        #window = 500
-        #grace_period = 50
-        #if coord_string in self.seen_coords:
-        #    if grace_period <= self.step_count - self.last_new_step <= window:
-                # Apply a penalty if revisited after the grace period
-        #        self.stuck_penalty -= 0.1
-        #else:
-        #    self.novelty_reward += 0.001 * min((self.step_count - self.last_new_step), window)
-        #    self.last_new_step = self.step_count # This is the problem
         self.seen_coords[coord_string] = self.step_count
-        
+
+    def update_directional_persistence(self, action):
+        """
+        Encourages the agent to maintain movement in a consistent direction.
+        - Keeps accumulating reward if moving the same way.
+        - Slowly decreases if direction changes unnecessarily.
+        - Resets if the agent is stuck.
+        """
+        if self.in_battle():
+            return  # No directional reward in battles or menus
+
+        x_pos, y_pos, map_n = self.get_game_coords()
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        # If the agent didn't move, decay the reward
+        if coord_string == self.last_coord:
+            self.directional_reward = max(self.directional_reward - 10, 0)  # Gradually reduce reward if stuck
+            return
+
+        # If moving in the same direction, keep accumulating reward
+        if action == self.last_action:
+            self.directional_reward += 0.1  # Builds up over time
+        else:
+            # If forced to turn, apply a smaller decrease instead of resetting
+            if self.is_forced_turn(coord_string):
+                self.directional_reward = max(self.directional_reward + 0.05, 0)
+            else:
+                self.directional_reward = max(self.directional_reward - 10, 0)  # Reduce faster if unnecessary turn
+
+        self.last_coord = coord_string
+        self.last_action = action
+
+
+
+    def is_forced_turn(self, coord_string):
+        """
+        Determines if the agent is forced to turn because it's at a dead end.
+        This occurs if the agent has only one viable movement option.
+        """
+        x_pos, y_pos, map_n = self.get_game_coords()
+
+        # Check possible movement options
+        possible_moves = [
+            f"x:{x_pos+1} y:{y_pos} m:{map_n}",
+            f"x:{x_pos-1} y:{y_pos} m:{map_n}",
+            f"x:{x_pos} y:{y_pos+1} m:{map_n}",
+            f"x:{x_pos} y:{y_pos-1} m:{map_n}",
+        ]
+
+        # Count how many moves are available
+        open_paths = sum(1 for move in possible_moves if move not in self.seen_coords)
+
+        return open_paths <= 1  # True if only one option remains
+
+    def get_revisit_penalty(self):
+        """
+        Applies a small penalty when the agent re-enters an area too soon.
+        - No penalty for first-time visits.
+        - Penalty scales based on revisit frequency.
+        - No penalty during battles.
+        """
+        if self.in_battle():
+            return 0.0  # No penalty if the agent is in a battle
+
+        x_pos, y_pos, map_n = self.get_game_coords()
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        # Ensure we are not incorrectly penalizing first-time visits
+        if coord_string not in self.seen_coords:
+            return 0.0  # No penalty for a truly new visit
+
+        # Calculate time since last visit
+        last_seen_step = self.seen_coords[coord_string]
+        time_since_last_visit = self.step_count - last_seen_step
+
+        if time_since_last_visit >= 500:
+            return 0.0  # No penalty if enough time has passed
+
+        # Scale penalty based on how soon the agent returns
+        penalty = -0.01 * (time_since_last_visit)  # Starts at -5, reduces as more time passes
+        # Want to invert this so penalty is larger the sooner it revisits the space.
+
+        return max(penalty, -5)  # Ensure it doesn’t exceed -5
+
+
+    def get_frontier_bonus(self):
+        """
+        Encourages movement toward unexplored tiles.
+        - If the agent doesn't move and isn't in battle, the reward is 0.
+        - The bonus is higher for moving into areas with many unexplored neighbors.
+        """
+        if self.in_battle():
+            return self.frontier_reward  # No penalty for standing still in battle
+        # Should be self.frontier_reward, because setting to 0 is essentially a penalty
+
+        x_pos, y_pos, map_n = self.get_game_coords()
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        # If the agent didn't move, set the bonus to 0
+        if coord_string == self.last_coord:
+            return 0.0  
+
+        # Check how many neighboring tiles are unexplored
+        neighbors = [
+            f"x:{x_pos+1} y:{y_pos} m:{map_n}",
+            f"x:{x_pos-1} y:{y_pos} m:{map_n}",
+            f"x:{x_pos} y:{y_pos+1} m:{map_n}",
+            f"x:{x_pos} y:{y_pos-1} m:{map_n}",
+        ]
+
+        unexplored_neighbors = sum(1 for n in neighbors if n not in self.seen_coords)
+
+        # Reward based on number of unexplored neighbors
+        self.frontier_reward = 0.2 * unexplored_neighbors  # Slightly reduced to prevent over-rewarding
+
+
+
+
+    def is_on_a_new_path(self, coord_string):
+        """
+        Determines if the agent is entering a new section of the map 
+        (not just an unexplored tile but a new route).
+        """
+        return coord_string not in self.path_progress
+
+
+    def in_battle(self):
+        #Check if player is in any type of battle
+        return (
+            self.read_m(0xD057) == 0x0F or  # Battle menu active
+            self.read_m(0xCFFB) == 0x01     # Wild battle flag
+        )
+    """
     def update_exploration_rewards(self):
         x, y, map_n = self.get_game_coords()
         area_hash = self.get_local_area_hash(x, y)
-        
+        freq_penalty = 0.0
+
         # Convert hash to positive integer
         positive_hash = abs(area_hash) % (10**8)  # 8-digit number
-        
+
+        if self.in_battle():
+            freq_penalty = 1.0  # Pause exploration rewards during battles
+        elif self.read_m(0xD803) == 0 and self.read_m(0xD057) == 0 and self.read_m(0xCF13) == 0:
+        # Block rewards only in non-essential menus
+            if self.read_m(0xFF8C) == 6:
+                # Start Menu
+                if self.read_m(0xCF94) == 0:
+                    freq_penalty = 0.0
+                # Stats Menu
+                if self.read_m(0xCF94) == 1:
+                    freq_penalty = 0.0
+                # Pokemon Menu
+                if self.read_m(0xCF94) == 2:
+                    freq_penalty = 0.0
+        else:
+            # Recent path penalty calculation
+            recent_count = list(self.recent_coords).count(positive_hash)
+            freq_penalty = max(0, 1.0 - (recent_count * 0.3))  # Stronger penalty
+
         # First visit reward
         if positive_hash not in self.local_area_hashes:
             self.local_area_hashes.add(positive_hash)
@@ -431,15 +593,13 @@ class RedGymEnv(Env):
         else:
             base_reward = 0.0
         
-        # Recent path penalty calculation
-        recent_count = list(self.recent_coords).count(positive_hash)
-        freq_penalty = max(0, 1.0 - (recent_count * 0.3))  # Stronger penalty
-        
         # Store in recent memory
         self.recent_coords.append(positive_hash)
+        self.last_position = (x, y, map_n)
         
-        return base_reward + freq_penalty  
-
+        # Rest of exploration calculation...        
+        return base_reward + freq_penalty
+"""
     def get_global_coords(self):
         x_pos, y_pos, map_n = self.get_game_coords()
         return local_to_global(y_pos, x_pos, map_n)
@@ -719,12 +879,17 @@ class RedGymEnv(Env):
             "dead": self.reward_scale * self.died_count * -0.01,
             "badge": self.reward_scale * self.get_badges() * 100,
             "exp": self.reward_scale * self.explore_weight * len(self.seen_coords),
-            "exp_boost": self.update_exploration_rewards(),
+            #"exp_boost": self.update_exploration_rewards(),
             #"stuck": self.reward_scale * self.explore_weight * self.stuck_penalty,## Removing novelty for now + self.novelty_reward,
-            "items": self.reward_scale * self.get_item_reward(), ## Changing to flat increase instead of 0.1
+            #"items": self.reward_scale * self.get_item_reward(), ## Removed due to AI spam buying antidotes for score TODO: Add back only for potions and pokeballs
             "seen": self.reward_scale * self.get_pokedex_seen(),
             "cap": self.reward_scale * self.get_pokedex_caught() * 3,
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
+            # New Rewards
+            "frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward
+            "dir": self.directional_reward,  # Reward for maintaining movement
+            "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking
+            
         }
 
         return state_scores

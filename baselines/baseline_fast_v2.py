@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     print(env_config)
     
-    num_cpu = 48  # Also sets the number of episodes per training iteration
+    num_cpu = 32  # Also sets the number of episodes per training iteration
     env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
     
     if use_wandb_logging:

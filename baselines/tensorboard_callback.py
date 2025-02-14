@@ -68,25 +68,31 @@ class TensorboardCallback(BaseCallback):
             merged_flags = {k: v for d in list_of_flag_dicts for k, v in d.items()}
             self.logger.record("trajectory/all_flags", json.dumps(merged_flags))
 
-        if self.n_calls % self.log_freq == 0:
+        if self.n_calls % 50 == 0:  # Log every 50 steps
             try:
                 # Get rewards from all environments in the vector
                 run_state_scores = self.training_env.get_attr("progress_reward")
 
-                # Flatten progress rewards into a single list of dicts (one per agent)
+                if not run_state_scores or len(run_state_scores) == 0:
+                    raise ValueError("progress_reward attribute returned None or an empty list.")
+
+                # Flatten progress rewards into a list of dicts (one per agent)
                 all_agent_rewards = [stats for stats in run_state_scores if stats]
 
-                # Compute mean values
-                mean_rewards = {key: np.mean([agent[key] for agent in all_agent_rewards if key in agent])
+                if len(all_agent_rewards) == 0:
+                    raise ValueError("No valid progress rewards found in agents.")
+
+                # Compute mean values across all agents
+                mean_rewards = {key: np.mean([agent.get(key, 0) for agent in all_agent_rewards])
                                 for key in all_agent_rewards[0]}
 
                 # Log rewards per agent
                 reward_logs = {}
                 for agent_idx, rewards in enumerate(all_agent_rewards):
                     for key, value in rewards.items():
-                        reward_logs[f"agent_{agent_idx}/rewards/{key}"] = value
+                        reward_logs[f"agent_{agent_idx}/rewards/{key}"] = value  # Log each reward per agent
 
-                # Log mean rewards
+                # Log mean rewards across agents
                 for key, value in mean_rewards.items():
                     reward_logs[f"rewards_mean/{key}"] = value
 
