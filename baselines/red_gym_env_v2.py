@@ -451,7 +451,7 @@ class RedGymEnv(Env):
         else:
             # If forced to turn, apply a smaller decrease instead of resetting
             if self.is_forced_turn(coord_string):
-                self.directional_reward = max(self.directional_reward + 0.05, 0)
+                self.directional_reward = max(self.directional_reward - 5, 0)
             else:
                 self.directional_reward = max(self.directional_reward - 10, 0)  # Reduce faster if unnecessary turn
 
@@ -519,7 +519,6 @@ class RedGymEnv(Env):
         """
         if self.in_battle():
             return self.frontier_reward  # No penalty for standing still in battle
-        # Should be self.frontier_reward, because setting to 0 is essentially a penalty
 
         x_pos, y_pos, map_n = self.get_game_coords()
         coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
@@ -883,7 +882,7 @@ class RedGymEnv(Env):
             #"stuck": self.reward_scale * self.explore_weight * self.stuck_penalty,## Removing novelty for now + self.novelty_reward,
             #"items": self.reward_scale * self.get_item_reward(), ## Removed due to AI spam buying antidotes for score TODO: Add back only for potions and pokeballs
             "seen": self.reward_scale * self.get_pokedex_seen(),
-            "cap": self.reward_scale * self.get_pokedex_caught() * 3,
+            "cap": self.reward_scale * self.get_pokedex_caught() * 2,
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
             # New Rewards
             "frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward
@@ -924,10 +923,6 @@ class RedGymEnv(Env):
                     self.disable_wild_encounters
                 ):
                     self.pyboy.set_memory_value(0xD887, 0X0A)
-
-                #for _ in range(200):
-                #    self.seen_coords.popitem()
-
     def read_hp_fraction(self):
         hp_sum = sum([
             
