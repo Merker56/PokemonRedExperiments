@@ -509,6 +509,32 @@ class RedGymEnv(Env):
         # Want to invert this so penalty is larger the sooner it revisits the space.
 
         return max(penalty, -5)  # Ensure it doesn’t exceed -5
+    
+    def get_immediate_revisit_penalty(self):
+        """
+        Applies a small penalty when the agent re-enters an area too soon.
+        - No penalty for first-time visits.
+        - Penalty scales based on revisit frequency.
+        - No penalty during battles.
+        """
+        if self.in_battle():
+            return 0.0  # No penalty if the agent is in a battle
+
+        x_pos, y_pos, map_n = self.get_game_coords()
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        # Ensure we are not incorrectly penalizing first-time visits
+        if coord_string not in self.seen_coords:
+            return 0.0  # No penalty for a truly new visit
+
+        # Calculate time since last visit
+        last_seen_step = self.seen_coords[coord_string]
+        time_since_last_visit = self.step_count - last_seen_step
+
+        if time_since_last_visit >= 100:
+            return 0.0  # No penalty if enough time has passed
+
+        return -5.0
 
 
     def get_frontier_bonus(self):
@@ -886,8 +912,9 @@ class RedGymEnv(Env):
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
             # New Rewards
             "frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward
-            "dir": self.directional_reward,  # Reward for maintaining movement
-            "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking
+            #"dir": self.directional_reward,  # Reward for maintaining movement
+            "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking,
+            "ir": self.get_immediate_revisit_penalty() #Penalizes immediate backtracking
             
         }
 
