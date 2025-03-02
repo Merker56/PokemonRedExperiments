@@ -279,7 +279,8 @@ class RedGymEnv(Env):
             and self.step_count % 50 == 0
         ):
             self.pyboy.set_memory_value(0xD347, 0x01)
-         
+
+        self.update_10_pokeballs()         
 
         self.last_health = self.read_hp_fraction()
 
@@ -792,6 +793,10 @@ class RedGymEnv(Env):
     def get_badges(self):
         return self.bit_count(self.read_m(0xD356))
     
+    def update_10_pokeballs(self):
+        if self.pyboy.get_memory_value(0xD31E):
+            self.pyboy.set_memory_value(0xD31F, 10)
+    
     def get_item_reward(self):
         ##Checks the bag slots and awards points for items like pokeballs, potions and revives
         self.item_reward = 0
@@ -899,7 +904,7 @@ class RedGymEnv(Env):
         state_scores = {
             "event": self.reward_scale * self.update_max_event_rew() * 10, ## Increased to 10x to encourage more trainer battles
             "level": self.reward_scale * self.get_levels_reward(),
-            "heal": self.reward_scale * self.total_healing_rew * 5,
+            "heal": self.reward_scale * self.total_healing_rew * 10,
             #"op_lvl": self.reward_scale * self.update_max_op_level() * 0.2,
             "dead": self.reward_scale * self.died_count * -0.01,
             "badge": self.reward_scale * self.get_badges() * 100,
@@ -939,17 +944,22 @@ class RedGymEnv(Env):
 
     def update_heal_reward(self):
         cur_health = self.read_hp_fraction()
-        # if health increased and party size did not change
-        if cur_health > self.last_health and self.read_m(0xD163) == self.party_size:
-            if self.last_health > 0:
-                heal_amount = cur_health - self.last_health
-                self.total_healing_rew += heal_amount
-            else:
-                self.died_count += 1
-                if (
-                    self.disable_wild_encounters
-                ):
-                    self.pyboy.set_memory_value(0xD887, 0X0A)
+        x_pos, y_pos, map_n = self.get_game_coords()
+        if self.read_m(0xD163) == self.party_size:
+            if map_n in [41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 182]:
+            # if health increased and party size did not change
+                if cur_health > self.last_health:
+                    if self.last_health > 0:
+                        heal_amount = cur_health - self.last_health
+                        self.total_healing_rew += heal_amount
+        else:
+            self.died_count += 1
+            self.last_health = 1
+            if (
+                self.disable_wild_encounters
+            ):
+                self.pyboy.set_memory_value(0xD887, 0X0A)
+
     def read_hp_fraction(self):
         hp_sum = sum([
             
