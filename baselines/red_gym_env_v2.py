@@ -77,6 +77,8 @@ class RedGymEnv(Env):
         self.frontier_reward = 0
         self.path_progress = set()
         self.last_coord = []
+        self.party_info = {} #Store pokemon id, moves, levels, and pp
+        self.pokemon_levels = {} #Store pokemon id and max level, updating each iteration
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
@@ -194,6 +196,7 @@ class RedGymEnv(Env):
         self.current_event_flags_set = {}
 
         self.pokemon_levels = {} #Store pokemon id and max level, updating each iteration
+        self.party_info = {} #Store pokemon id, moves, levels, and pp
         # experiment! 
         # self.max_steps += 128
 
@@ -777,9 +780,25 @@ class RedGymEnv(Env):
             else:
                 self.pokemon_levels[current_party_names[i]] = current_party_levels[i]
 
+    def update_pokemon_info(self):
+        ## Storing the level, moves, and pp for each pokemon in the party throughout the game
+        current_party_levels = [self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]
+        current_party_names = [self.read_m(a) for a in [0xD164, 0xD165, 0xD166, 0xD167, 0xD168, 0xD169]]
+        current_party_pokemon = [self.read_m(a) for a in [0xD16B, 0xD197, 0xD1C3, 0xD1EF, 0xD21B, 0xD247]]
+        current_party_moves1 = [self.read_m(a) for a in [0xD173, 0xD19F, 0xD1CB, 0xD1F7, 0xD223, 0xD24F]]
+        current_party_moves2 = [self.read_m(a) for a in [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250]]
+        current_party_moves3 = [self.read_m(a) for a in [0xD175, 0xD1A1, 0xD1CD, 0xD1F9, 0xD225, 0xD251]]
+        current_party_moves4 = [self.read_m(a) for a in [0xD176, 0xD1A2, 0xD1CE, 0xD1FA, 0xD226, 0xD252]]
+        for i in range(6):
+            if current_party_names[i] in self.party_info:
+                self.party_info[current_party_names[i]] = (current_party_pokemon[i], current_party_levels[i], current_party_moves1[i], current_party_moves2[i], current_party_moves3[i], current_party_moves4[i])
+            else:
+                self.party_info[current_party_names[i]] = (current_party_pokemon[i], current_party_levels[i], current_party_moves1[i], current_party_moves2[i], current_party_moves3[i], current_party_moves4[i])
+
     def get_levels_reward(self): 
         ## Do this by taking the max for each pokemon encountered
         self.store_pokemon_levels()
+        self.update_pokemon_info()
         level_sum = sum(self.pokemon_levels.values()) - 6
         if level_sum < 20:
             scaled = level_sum 
@@ -919,8 +938,9 @@ class RedGymEnv(Env):
             "frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward
             #"dir": self.directional_reward,  # Reward for maintaining movement
             "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking,
-            "ir": self.get_immediate_revisit_penalty() #Penalizes immediate backtracking
-            
+            "ir": self.get_immediate_revisit_penalty(), #Penalizes immediate backtracking
+            "lcut": self.reward_scale * self.has_learned_cut(), ## Reward for learning cut
+            "ucut": self.reward_scale * self.has_used_cut()
         }
 
         return state_scores
@@ -975,6 +995,35 @@ class RedGymEnv(Env):
 
     def read_hp(self, start):
         return 256 * self.read_m(start) + self.read_m(start + 1)
+    
+    def has_learned_cut(self):
+        # Memory addresses for all move slots across 6 Pokémon (4 moves each)
+        move_addresses = [
+            # First Pokémon moves
+            0xD173, 0xD174, 0xD175, 0xD176,
+            # Second Pokémon moves
+            0xD19F, 0xD1A0, 0xD1A1, 0xD1A2,
+            # Third Pokémon moves
+            0xD1CB, 0xD1CC, 0xD1CD, 0xD1CE,
+            # Fourth Pokémon moves
+            0xD1F7, 0xD1F8, 0xD1F9, 0xD1FA,
+            # Fifth Pokémon moves
+            0xD223, 0xD224, 0xD225, 0xD226,
+            # Sixth Pokémon moves
+            0xD24F, 0xD250, 0xD251, 0xD252
+        ]
+        
+        # Check if any move slot contains Cut (either as value 15 or string "CUT")
+        for address in move_addresses:
+            move_value = self.read_m(address)
+            if move_value == 15 or move_value == "CUT":
+                return 100
+            elif move_value == 33:
+                return 5
+        return 0
+        
+    def has_used_cut(self):
+        return 0
 
     def update_pp_heal_reward(self):
         cur_power = self.get_low_power_moves()

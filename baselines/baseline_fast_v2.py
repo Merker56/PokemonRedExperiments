@@ -59,9 +59,9 @@ if __name__ == "__main__":
 
     env_config = {
                 'headless': True, 'save_final_state': False, 'early_stop': False, ## Set headless false to display the environments
-                'action_freq': 24, 'init_state': '../has_pokedex_nballs.state', 'max_steps': ep_length, 
+                'action_freq': 24, 'init_state': '../Bulbasaur.state', 'max_steps': ep_length, 
                 'print_rewards': True, 'save_video': False, 'fast_video': True, 'session_path': sess_path,
-                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 1, 'explore_weight': 0.1,
+                'gb_path': '../PokemonRed.gb', 'debug': False, 'reward_scale': 2, 'explore_weight': 0.05,
                 'infinite_money': True, 'disable_wild_encounters': ['MT_MOON_1F', 'MT_MOON_B1F', 'MT_MOON_B2F']
             }
 

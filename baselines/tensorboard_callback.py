@@ -92,6 +92,55 @@ class TensorboardCallback(BaseCallback):
                     for key, value in rewards.items():
                         reward_logs[f"agent_{agent_idx}/rewards/{key}"] = value  # Log each reward per agent
 
+               # Get party info from all environments
+                run_pokemon_info = self.training_env.get_attr("party_info")
+                all_agent_party = [party for party in run_pokemon_info if party]
+                
+                # Create a single table for all agents' Pokémon
+                columns = ["agent_id", "pokemon_name", "pokemon_id", "level", "move1", "move2", "move3", "move4"]
+                pokemon_table = wandb.Table(columns=columns)
+                
+                # Aggregate party stats for all agents
+                party_stats = {}
+                
+                # Add each agent's Pokémon to the table
+                for agent_idx, party_dict in enumerate(all_agent_party):
+                    # Track stats for this agent
+                    active_pokemon_count = 0
+                    total_level = 0
+                    
+                    # Add each Pokémon's data as a row
+                    for pokemon_name, pokemon_data in party_dict.items():
+                        # Skip empty slots (pokemon with ID 0)
+                        if pokemon_name == 0 or pokemon_data[0] == 0:
+                            continue
+                            
+                        pokemon_id = pokemon_data[0]
+                        level = pokemon_data[1]
+                        move1 = pokemon_data[2]
+                        move2 = pokemon_data[3]
+                        move3 = pokemon_data[4]
+                        move4 = pokemon_data[5]
+                        
+                        # Add row to table
+                        pokemon_table.add_data(agent_idx, pokemon_name, pokemon_id, level, move1, move2, move3, move4)
+                        
+                        # Update stats
+                        active_pokemon_count += 1
+                        total_level += level
+                    
+                    # Calculate and store summary stats
+                    avg_level = total_level / max(active_pokemon_count, 1)
+                    party_stats[f"agent_{agent_idx}/party_stats/pokemon_count"] = active_pokemon_count
+                    party_stats[f"agent_{agent_idx}/party_stats/avg_level"] = avg_level
+                
+                # Log the single table for all agents
+                wandb.log({"pokemon_party_table": pokemon_table}, step=self.num_timesteps)
+                
+                # Log party stats
+                party_stats["global_step"] = self.num_timesteps
+                wandb.log(party_stats)
+
                 # Log mean rewards across agents
                 for key, value in mean_rewards.items():
                     reward_logs[f"rewards_mean/{key}"] = value
