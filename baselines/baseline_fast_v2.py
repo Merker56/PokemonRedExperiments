@@ -89,7 +89,7 @@ if __name__ == "__main__":
     #env_checker.check_env(env)
 
     # put a checkpoint here you want to start from
-    file_name = ""#"session_7edf7249/poke_37355520_steps" # <- a cerulean checkpoint
+    file_name = "session_a2886d25/poke_39321600_steps"#"session_7edf7249/poke_37355520_steps" # <- a cerulean checkpoint
 
     train_steps_batch = ep_length // 200
     
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         model.rollout_buffer.n_envs = num_cpu
         model.rollout_buffer.reset()
     else:
-        model = PPO("MultiInputPolicy", env, verbose=1, n_steps=train_steps_batch, batch_size=512, n_epochs=1, gamma=0.997, ent_coef=0.01,\
+        model = PPO("MultiInputPolicy", env, verbose=1, n_steps=train_steps_batch, batch_size=512, n_epochs=1, gamma=0.997, ent_coef=0.02,\
                     tensorboard_log=sess_path, device = "cuda")
     
     print(model.policy)

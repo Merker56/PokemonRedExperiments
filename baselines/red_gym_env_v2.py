@@ -15,7 +15,9 @@ from pyboy.utils import WindowEvent
 
 from global_map import local_to_global, GLOBAL_MAP_SHAPE
 from map_lookup import MapIds
-
+from tilesets import Tilesets
+from field_moves import FieldMoves
+from generate_stream_overlay import update_agent_overlay, prepare_overlay_data
 
 event_flags_start = 0xD747
 event_flags_end = 0xD7F6 # 0xD761 # 0xD886 temporarily lower event flag range for obs input
@@ -282,8 +284,11 @@ class RedGymEnv(Env):
             and self.step_count % 50 == 0
         ):
             self.pyboy.set_memory_value(0xD347, 0x01)
-
-        self.update_10_pokeballs()         
+        if self.step_count % 100 == 0:
+            self.update_10_pokeballs() # Always have 10 pokeballs    
+            self.force_learn_HMs() # Force learn HMs
+            if self.headless == False:
+                self.prepare_overlay_data() # Update overlay data
 
         self.last_health = self.read_hp_fraction()
 
@@ -462,7 +467,12 @@ class RedGymEnv(Env):
         self.last_coord = coord_string
         self.last_action = action
 
+    def get_current_location(self):
+        map_x, map_y, map_n = self.get_game_coords()
+        return MapIds[map_n].name
 
+    def get_badges_status(self):
+        return [self.read_bit(0xD356, i) for i in range(8)]
 
     def is_forced_turn(self, coord_string):
         """
@@ -493,9 +503,16 @@ class RedGymEnv(Env):
         """
         if self.in_battle():
             return 0.0  # No penalty if the agent is in a battle
-
+        
         x_pos, y_pos, map_n = self.get_game_coords()
         coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+
+        if map_n == 88 & self.read_bit(0xD7F2, 7) == 1:
+            return 0.0 # No penalty in Bill's Lab until we get the SS Anne Ticket
+        if map_n == 101 & self.read_bit(0xD803, 2) == 1:
+            return 0.0 # No penalty in Captain's Quarters until we get the HM01
+        if map_n == 92 & self.read_bit(0xD773, 1) == 1:
+            return 0.0 # No penalty in Vermillion Gym until locks are opened
 
         # Ensure we are not incorrectly penalizing first-time visits
         if coord_string not in self.seen_coords:
@@ -537,6 +554,12 @@ class RedGymEnv(Env):
 
         if time_since_last_visit >= 100:
             return 0.0  # No penalty if enough time has passed
+        if map_n == 88 & self.read_bit(0xD7F2, 7) == 1:
+            return 0.0 # No penalty in Bill's Lab until we get the SS Anne Ticket
+        if map_n == 101 & self.read_bit(0xD803, 2) == 1:
+            return 0.0 # No penalty in Captain's Quarters until we get the HM01
+        if map_n == 92 & self.read_bit(0xD773, 1) == 1:
+            return 0.0 # No penalty in Vermillion Gym until locks are opened
 
         return -5.0
 
@@ -570,16 +593,12 @@ class RedGymEnv(Env):
         # Reward based on number of unexplored neighbors
         self.frontier_reward = 0.2 * unexplored_neighbors  # Slightly reduced to prevent over-rewarding
 
-
-
-
     def is_on_a_new_path(self, coord_string):
         """
         Determines if the agent is entering a new section of the map 
         (not just an unexplored tile but a new route).
         """
         return coord_string not in self.path_progress
-
 
     def in_battle(self):
         #Check if player is in any type of battle
@@ -789,11 +808,34 @@ class RedGymEnv(Env):
         current_party_moves2 = [self.read_m(a) for a in [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250]]
         current_party_moves3 = [self.read_m(a) for a in [0xD175, 0xD1A1, 0xD1CD, 0xD1F9, 0xD225, 0xD251]]
         current_party_moves4 = [self.read_m(a) for a in [0xD176, 0xD1A2, 0xD1CE, 0xD1FA, 0xD226, 0xD252]]
+        current_party_hp_1 = [self.read_m(a) for a in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]]
+        current_party_hp_2 = [self.read_m(a) for a in [0xD16D, 0xD199, 0xD1C5, 0xD1F1, 0xD21D, 0xD249]]
+        current_party_max_hp_1 = [self.read_m(a) for a in [0xD18D, 0xD1B9, 0xD1E5, 0xD211, 0xD23D, 0xD269]]
+        current_party_max_hp_2 = [self.read_m(a) for a in [0xD18E, 0xD1BA, 0xD1E6, 0xD212, 0xD23E, 0xD26A]]
         for i in range(6):
-            if current_party_names[i] in self.party_info:
-                self.party_info[current_party_names[i]] = (current_party_pokemon[i], current_party_levels[i], current_party_moves1[i], current_party_moves2[i], current_party_moves3[i], current_party_moves4[i])
-            else:
-                self.party_info[current_party_names[i]] = (current_party_pokemon[i], current_party_levels[i], current_party_moves1[i], current_party_moves2[i], current_party_moves3[i], current_party_moves4[i])
+            # Combine HP values
+            current_hp = (current_party_hp_2[i] << 8) | current_party_hp_1[i]
+            max_hp = (current_party_max_hp_2[i] << 8) | current_party_max_hp_1[i]
+            hp_string = f"{current_hp}/{max_hp}"
+            
+            # Prepare the moves
+            moves = [
+                self.get_move_names_map(current_party_moves1[i] + 1),
+                self.get_move_names_map(current_party_moves2[i] + 1),
+                self.get_move_names_map(current_party_moves3[i] + 1),
+                self.get_move_names_map(current_party_moves4[i] + 1)
+            ]
+            
+            # Update party_info with the new format
+            self.party_info[current_party_names[i]] = (
+                self.get_pokemon_name(current_party_pokemon[i]),  # Pokemon name
+                current_party_levels[i],  # Level
+                moves[0],  # Move 1
+                moves[1],  # Move 2
+                moves[2],  # Move 3
+                moves[3],  # Move 4
+                hp_string  # HP as a string
+            )
 
     def get_levels_reward(self): 
         ## Do this by taking the max for each pokemon encountered
@@ -935,12 +977,13 @@ class RedGymEnv(Env):
             "cap": self.reward_scale * self.get_pokedex_caught() * 2,
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
             # New Rewards
-            "frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward
+            #"frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward;; Removed for now
             #"dir": self.directional_reward,  # Reward for maintaining movement
             "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking,
             "ir": self.get_immediate_revisit_penalty(), #Penalizes immediate backtracking
-            "lcut": self.reward_scale * self.has_learned_cut(), ## Reward for learning cut
-            "ucut": self.reward_scale * self.has_used_cut()
+            "move": self.reward_scale * self.move_rewards(), ## Reward for learning stronger moves
+            "HMs": self.reward_scale * self.has_HMs(),
+            #"ucut": self.reward_scale * self.has_used_cut()
         }
 
         return state_scores
@@ -996,7 +1039,21 @@ class RedGymEnv(Env):
     def read_hp(self, start):
         return 256 * self.read_m(start) + self.read_m(start + 1)
     
-    def has_learned_cut(self):
+    def has_HMs(self):
+        HM_reward = 0
+        if self.read_bit(0xD803, 0) == 1:
+            HM_reward += 0.01
+        if self.read_bit(0xD7E0, 6) == 1:
+            HM_reward += 0.1
+        if self.read_bit(0xD857, 0) == 1:
+            HM_reward += 1
+        if self.read_bit(0xD78E, 0) == 1:
+            HM_reward += 10
+        if self.read_bit(0xD7C2, 0) == 1:
+            HM_reward += 100
+        return HM_reward
+    
+    def move_rewards(self):
         # Memory addresses for all move slots across 6 Pokémon (4 moves each)
         move_addresses = [
             # First Pokémon moves
@@ -1012,18 +1069,119 @@ class RedGymEnv(Env):
             # Sixth Pokémon moves
             0xD24F, 0xD250, 0xD251, 0xD252
         ]
-        
+        move_reward = 0
         # Check if any move slot contains Cut (either as value 15 or string "CUT")
         for address in move_addresses:
             move_value = self.read_m(address)
-            if move_value == 15 or move_value == "CUT":
-                return 100
-            elif move_value == 33:
-                return 5
-        return 0
+            if move_value in [15, 19, 57, 70]:
+                move_reward += 100
+            elif move_value in [63, 56, 72, 83, 87, 89, 90, 94, 136, 143]:
+                move_reward += 1
+            elif move_value in [12, 14, 17, 25, 26, 28, 58, 59, 60, 61, 62, 91, 92, 123, 124, 126, 127, 129, 158, 161]:
+                move_reward += 0.5
+            elif move_value in [4, 5, 7, 8, 9, 11, 24, 32, 33, 37, 41, 42, 44, 49, 51, 52, 53, 55, 65, 66, 67, 69, 71, 82, 85, 88, 93, 99, 101, 106, 119, 125, 128, 131, 134, 139, 140, 149, 152, 157, 162, 163]:
+                move_reward += 0.2
+            elif move_value in [33, 16, 1, 2, 3, 6, 10, 18, 20, 21, 22, 23, 29, 30, 34, 35, 36, 38, 40, 64, 73, 80, 84, 98, 121, 130, 132, 141, 145, 146, 154, 155]:
+                move_reward += 0.1
+        return move_reward
         
-    def has_used_cut(self):
-        return 0
+    def force_learn_HMs(self):
+        if self.read_bit(0xD803, 0) == 1: # Has Obtained Cut HM
+            if self.read_m(0xD164) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD174) == 45: # Replace Growl with Cut
+                    self.set_m(0xD174, 15)
+            if self.read_m(0xD165) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD1A0) == 45: # Replace Growl with Cut
+                    self.set_m(0xD1A0, 15)
+            if self.read_m(0xD166) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD1CC) == 45: # Replace Growl with Cut
+                    self.set_m(0xD1CC, 15)
+            if self.read_m(0xD167) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD1F8) == 45: # Replace Growl with Cut
+                    self.set_m(0xD1F8, 15)
+            if self.read_m(0xD168) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD224) == 45: # Replace Growl with Cut
+                    self.set_m(0xD224, 15)
+            if self.read_m(0xD169) in [153, 154, 9]: # Pokémon is Bulbasaur, Ivysaur, or Venusaur
+                if self.read_m(0xD250) == 45: # Replace Growl with Cut
+                    self.set_m(0xD250, 15)
+
+    def cut_if_next(self):
+        # https://github.com/pret/pokered/blob/d38cf5281a902b4bd167a46a7c9fd9db436484a7/constants/tileset_constants.asm#L11C8-L11C11
+        in_erika_gym = self.read_m("wCurMapTileset") == Tilesets.GYM.value
+        in_overworld = self.read_m("wCurMapTileset") == Tilesets.OVERWORLD.value
+        if self.read_m(0xD057) == 0 and (in_erika_gym or in_overworld):
+            _, wTileMap = self.pyboy.symbol_lookup("wTileMap")
+            tileMap = self.pyboy.memory[wTileMap : wTileMap + 20 * 18]
+            tileMap = np.array(tileMap, dtype=np.uint8)
+            tileMap = np.reshape(tileMap, (18, 20))
+            y, x = 8, 8
+            up, down, left, right = (
+                tileMap[y - 2 : y, x : x + 2],  # up
+                tileMap[y + 2 : y + 4, x : x + 2],  # down
+                tileMap[y : y + 2, x - 2 : x],  # left
+                tileMap[y : y + 2, x + 2 : x + 4],  # right
+            )
+
+            # Gym trees apparently get the same tile map as outside bushes
+            # GYM = 7
+            if (in_overworld and 0x3D in up) or (in_erika_gym and 0x50 in up):
+                self.pyboy.button("UP", delay=8)
+                self.pyboy.tick(self.action_freq, render=True)
+            elif (in_overworld and 0x3D in down) or (in_erika_gym and 0x50 in down):
+                self.pyboy.button("DOWN", delay=8)
+                self.pyboy.tick(self.action_freq, render=True)
+            elif (in_overworld and 0x3D in left) or (in_erika_gym and 0x50 in left):
+                self.pyboy.button("LEFT", delay=8)
+                self.pyboy.tick(self.action_freq, render=True)
+            elif (in_overworld and 0x3D in right) or (in_erika_gym and 0x50 in right):
+                self.pyboy.button("RIGHT", delay=8)
+                self.pyboy.tick(self.action_freq, render=True)
+            else:
+                return
+
+            # open start menu
+            self.pyboy.button("START", delay=8)
+            self.pyboy.tick(self.action_freq, self.animate_scripts)
+            # scroll to pokemon
+            # 1 is the item index for pokemon
+            for _ in range(24):
+                if self.pyboy.memory[self.pyboy.symbol_lookup("wCurrentMenuItem")[1]] == 1:
+                    break
+                self.pyboy.button("DOWN", delay=8)
+                self.pyboy.tick(self.action_freq, render=self.animate_scripts)
+            self.pyboy.button("A", delay=8)
+            self.pyboy.tick(self.action_freq, self.animate_scripts)
+
+            # find pokemon with cut
+            # We run this over all pokemon so we dont end up in an infinite for loop
+            for _ in range(7):
+                self.pyboy.button("DOWN", delay=8)
+                self.pyboy.tick(self.action_freq, self.animate_scripts)
+                party_mon = self.pyboy.memory[self.pyboy.symbol_lookup("wCurrentMenuItem")[1]]
+                _, addr = self.pyboy.symbol_lookup(f"wPartyMon{party_mon%6+1}Moves")
+                if 0xF in self.pyboy.memory[addr : addr + 4]:
+                    break
+
+            # Enter submenu
+            self.pyboy.button("A", delay=8)
+            self.pyboy.tick(4 * self.action_freq, self.animate_scripts)
+
+            # Scroll until the field move is found
+            _, wFieldMoves = self.pyboy.symbol_lookup("wFieldMoves")
+            field_moves = self.pyboy.memory[wFieldMoves : wFieldMoves + 4]
+
+            for _ in range(10):
+                current_item = self.read_m("wCurrentMenuItem")
+                if current_item < 4 and FieldMoves.CUT.value == field_moves[current_item]:
+                    break
+                self.pyboy.button("DOWN", delay=8)
+                self.pyboy.tick(self.action_freq, self.animate_scripts)
+
+            # press a bunch of times
+            for _ in range(5):
+                self.pyboy.button("A", delay=8)
+                self.pyboy.tick(4 * self.action_freq, self.animate_scripts)
 
     def update_pp_heal_reward(self):
         cur_power = self.get_low_power_moves()
@@ -1111,6 +1269,7 @@ class RedGymEnv(Env):
 
     def get_pokemon_name(self, pokemon_id):
         pokemon_dict = {
+            0: 'None',
             177: 'Squirtle',
             1: 'Rhydon',
             2: 'Kangaskhan',
@@ -1216,10 +1375,6 @@ class RedGymEnv(Env):
             123: 'Caterpie',
             124: 'Metapod',
             125: 'Butterfree',
-            126: 'Machamp',
-            128: 'Golduck',
-            129: 'Hypno',
-            130: 'Golbat',
             131: 'Mewtwo',
             132: 'Snorlax',
             133: 'Magicarp',
@@ -1264,3 +1419,176 @@ class RedGymEnv(Env):
             190: 'Victreebel'
         }
         return pokemon_dict[pokemon_id]
+
+    def get_move_names_map(self, move_id):
+        """Returns a dictionary mapping byte values to Pokémon move names."""
+        move_names_map = {
+            0: "No move",
+            1: "None",
+            2: "Pound",
+            3: "Karate Chop",
+            4: "Double Slap",
+            5: "Comet Punch",
+            6: "Mega Punch",
+            7: "Pay Day",
+            8: "Fire Punch",
+            9: "Ice Punch",
+            10: "Thunder Punch",
+            11: "Scratch",
+            12: "Vise Grip",
+            13: "Guillotine",
+            14: "Razor Wind",
+            15: "Swords Dance",
+            16: "Cut",
+            17: "Gust",
+            18: "Wing Attack",
+            19: "Whirlwind",
+            20: "Fly",
+            21: "Bind",
+            22: "Slam",
+            23: "Vine Whip",
+            24: "Stomp",
+            25: "Double Kick",
+            26: "Mega Kick",
+            27: "Jump Kick",
+            28: "Rolling Kick",
+            29: "Sand Attack",
+            30: "Headbutt",
+            31: "Horn Attack",
+            32: "Fury Attack",
+            33: "Horn Drill",
+            34: "Tackle",
+            35: "Body Slam",
+            36: "Wrap",
+            37: "Take Down",
+            38: "Thrash",
+            39: "Double-Edge",
+            40: "Tail Whip",
+            41: "Poison Sting",
+            42: "Twineedle",
+            43: "Pin Missile",
+            44: "Leer",
+            45: "Bite",
+            46: "Growl",
+            47: "Roar",
+            48: "Sing",
+            49: "Supersonic",
+            50: "Sonic Boom",
+            51: "Disable",
+            52: "Acid",
+            53: "Ember",
+            54: "Flamethrower",
+            55: "Mist",
+            56: "Water Gun",
+            57: "Hydro Pump",
+            58: "Surf",
+            59: "Ice Beam",
+            60: "Blizzard",
+            61: "Psybeam",
+            62: "Bubble Beam",
+            63: "Aurora Beam",
+            64: "Hyper Beam",
+            65: "Peck",
+            66: "Drill Peck",
+            67: "Submission",
+            68: "Low Kick",
+            69: "Counter",
+            70: "Seismic Toss",
+            71: "Strength",
+            72: "Absorb",
+            73: "Mega Drain",
+            74: "Leech Seed",
+            75: "Growth",
+            76: "Razor Leaf",
+            77: "Solar Beam",
+            78: "Poison Powder",
+            79: "Stun Spore",
+            80: "Sleep Powder",
+            81: "Petal Dance",
+            82: "String Shot",
+            83: "Dragon Rage",
+            84: "Fire Spin",
+            85: "Thunder Shock",
+            86: "Thunderbolt",
+            87: "Thunder Wave",
+            88: "Thunder",
+            89: "Rock Throw",
+            90: "Earthquake",
+            91: "Fissure",
+            92: "Dig",
+            93: "Toxic",
+            94: "Confusion",
+            95: "Psychic",
+            96: "Hypnosis",
+            97: "Meditate",
+            98: "Agility",
+            99: "Quick Attack",
+            100: "Rage",
+            101: "Teleport",
+            102: "Night Shade",
+            103: "Mimic",
+            104: "Screech",
+            105: "Double Team",
+            106: "Recover",
+            107: "Harden",
+            108: "Minimize",
+            109: "Smokescreen",
+            110: "Confuse Ray",
+            111: "Withdraw",
+            112: "Defense Curl",
+            113: "Barrier",
+            114: "Light Screen",
+            115: "Haze",
+            116: "Reflect",
+            117: "Focus Energy",
+            118: "Bide",
+            119: "Metronome",
+            120: "Mirror Move",
+            121: "Self-Destruct",
+            122: "Egg Bomb",
+            123: "Lick",
+            124: "Smog",
+            125: "Sludge",
+            126: "Bone Club",
+            127: "Fire Blast",
+            128: "Waterfall",
+            129: "Clamp",
+            130: "Swift",
+            131: "Skull Bash",
+            132: "Spike Cannon",
+            133: "Constrict",
+            134: "Amnesia",
+            135: "Kinesis",
+            136: "Soft-Boiled",
+            137: "High Jump Kick",
+            138: "Glare",
+            139: "Dream Eater",
+            140: "Poison Gas",
+            141: "Barrage",
+            142: "Leech Life",
+            143: "Lovely Kiss",
+            144: "Sky Attack",
+            145: "Transform",
+            146: "Bubble",
+            147: "Dizzy Punch",
+            148: "Spore",
+            149: "Flash",
+            150: "Psywave",
+            151: "Splash",
+            152: "Acid Armor",
+            153: "Crabhammer",
+            154: "Explosion",
+            155: "Fury Swipes",
+            156: "Bonemerang",
+            157: "Rest",
+            158: "Rock Slide",
+            159: "Hyper Fang",
+            160: "Sharpen",
+            161: "Conversion",
+            162: "Tri Attack",
+            163: "Super Fang",
+            164: "Slash",
+            165: "Substitute",
+            166: "Struggle"
+        }
+        return move_names_map[move_id]
