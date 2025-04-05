@@ -68,7 +68,7 @@ class TensorboardCallback(BaseCallback):
             merged_flags = {k: v for d in list_of_flag_dicts for k, v in d.items()}
             self.logger.record("trajectory/all_flags", json.dumps(merged_flags))
 
-        if self.n_calls % 50 == 0:  # Log every 50 steps
+        if self.n_calls % 100 == 0:  # Log every 50 steps
             try:
                 # Get rewards from all environments in the vector
                 run_state_scores = self.training_env.get_attr("progress_reward")
@@ -97,7 +97,7 @@ class TensorboardCallback(BaseCallback):
                 all_agent_party = [party for party in run_pokemon_info if party]
                 
                 # Create a single table for all agents' Pokémon
-                columns = ["agent_id", "pokemon_name", "pokemon_id", "level", "move1", "move2", "move3", "move4"]
+                columns = ["agent_id", "pokemon_id", "pokemon_name", "level", "move1", "move2", "move3", "move4"]
                 pokemon_table = wandb.Table(columns=columns)
                 
                 # Aggregate party stats for all agents

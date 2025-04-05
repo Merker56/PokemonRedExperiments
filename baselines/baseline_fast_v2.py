@@ -21,6 +21,7 @@ def make_env(rank, env_conf, seed=0):
     :param rank: (int) index of the subprocess
     """
     def _init():
+        env_conf['rank'] = rank
         env = StreamWrapper(
             RedGymEnv(env_conf), 
             stream_metadata = { # All of this is part is optional
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     #env_checker.check_env(env)
 
     # put a checkpoint here you want to start from
-    file_name = "session_a2886d25/poke_39321600_steps"#"session_7edf7249/poke_37355520_steps" # <- a cerulean checkpoint
+    file_name = "session_de61e3e9/poke_268697600_steps"#"session_7edf7249/poke_37355520_steps" # <- a cerulean checkpoint
 
     train_steps_batch = ep_length // 200
     

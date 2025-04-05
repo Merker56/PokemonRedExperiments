@@ -35,6 +35,7 @@ class RedGymEnv(Env):
         self.save_video = config["save_video"]
         self.fast_video = config["fast_video"]
         self.frame_stacks = 3
+        self.agent_id = config["rank"]
         self.explore_weight = (
             1 if "explore_weight" not in config else config["explore_weight"]
         )
@@ -52,6 +53,7 @@ class RedGymEnv(Env):
         self.map_frame_writer = None
         self.reset_count = 0
         self.all_runs = []
+        self.has_used_cut = 0
 
         self.essential_map_locations = {
             v:i for i,v in enumerate([
@@ -110,6 +112,10 @@ class RedGymEnv(Env):
         with open("events.json") as f:
             event_names = json.load(f)
         self.event_names = event_names
+
+        with open("map_data.json") as f:
+            map_data = json.load(f)
+        self.map_data = map_data
 
         self.output_shape = (72, 80, self.frame_stacks)
         self.coords_pad = 12
@@ -189,6 +195,7 @@ class RedGymEnv(Env):
         self.frontier_reward = 0
         self.path_progress = set()
         self.last_coord = []
+        self.has_used_cut = 0
 
         self.base_event_flags = sum([
                 self.bit_count(self.read_m(i))
@@ -263,11 +270,7 @@ class RedGymEnv(Env):
 
         self.check_in_menus()
 
-        # Compute frontier bonus **before** updating last_action
-        self.get_frontier_bonus()
-
-        # Apply directional persistence **after** frontier_bonus is computed
-        self.update_directional_persistence(action)
+        self.cut_if_next()
 
         # Compute new reward
         new_reward = self.update_reward()
@@ -288,7 +291,7 @@ class RedGymEnv(Env):
             self.update_10_pokeballs() # Always have 10 pokeballs    
             self.force_learn_HMs() # Force learn HMs
             if self.headless == False:
-                self.prepare_overlay_data() # Update overlay data
+                prepare_overlay_data(self) # Update overlay data
 
         self.last_health = self.read_hp_fraction()
 
@@ -467,9 +470,16 @@ class RedGymEnv(Env):
         self.last_coord = coord_string
         self.last_action = action
 
+    def find_location_by_id(self, map_data, location_id):
+        if "regions" in map_data and isinstance(map_data["regions"], list):
+            for region in map_data["regions"]:
+                if region["id"] == location_id:
+                    return region["name"]
+        return None  # Return None if no matching id is found
+
     def get_current_location(self):
         map_x, map_y, map_n = self.get_game_coords()
-        return MapIds[map_n].name
+        return self.find_location_by_id(self.map_data, map_n)
 
     def get_badges_status(self):
         return [self.read_bit(0xD356, i) for i in range(8)]
@@ -800,42 +810,82 @@ class RedGymEnv(Env):
                 self.pokemon_levels[current_party_names[i]] = current_party_levels[i]
 
     def update_pokemon_info(self):
-        ## Storing the level, moves, and pp for each pokemon in the party throughout the game
-        current_party_levels = [self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]
-        current_party_names = [self.read_m(a) for a in [0xD164, 0xD165, 0xD166, 0xD167, 0xD168, 0xD169]]
-        current_party_pokemon = [self.read_m(a) for a in [0xD16B, 0xD197, 0xD1C3, 0xD1EF, 0xD21B, 0xD247]]
-        current_party_moves1 = [self.read_m(a) for a in [0xD173, 0xD19F, 0xD1CB, 0xD1F7, 0xD223, 0xD24F]]
-        current_party_moves2 = [self.read_m(a) for a in [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250]]
-        current_party_moves3 = [self.read_m(a) for a in [0xD175, 0xD1A1, 0xD1CD, 0xD1F9, 0xD225, 0xD251]]
-        current_party_moves4 = [self.read_m(a) for a in [0xD176, 0xD1A2, 0xD1CE, 0xD1FA, 0xD226, 0xD252]]
-        current_party_hp_1 = [self.read_m(a) for a in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]]
-        current_party_hp_2 = [self.read_m(a) for a in [0xD16D, 0xD199, 0xD1C5, 0xD1F1, 0xD21D, 0xD249]]
-        current_party_max_hp_1 = [self.read_m(a) for a in [0xD18D, 0xD1B9, 0xD1E5, 0xD211, 0xD23D, 0xD269]]
-        current_party_max_hp_2 = [self.read_m(a) for a in [0xD18E, 0xD1BA, 0xD1E6, 0xD212, 0xD23E, 0xD26A]]
-        for i in range(6):
-            # Combine HP values
-            current_hp = (current_party_hp_2[i] << 8) | current_party_hp_1[i]
-            max_hp = (current_party_max_hp_2[i] << 8) | current_party_max_hp_1[i]
-            hp_string = f"{current_hp}/{max_hp}"
-            
-            # Prepare the moves
-            moves = [
-                self.get_move_names_map(current_party_moves1[i] + 1),
-                self.get_move_names_map(current_party_moves2[i] + 1),
-                self.get_move_names_map(current_party_moves3[i] + 1),
-                self.get_move_names_map(current_party_moves4[i] + 1)
-            ]
-            
-            # Update party_info with the new format
-            self.party_info[current_party_names[i]] = (
-                self.get_pokemon_name(current_party_pokemon[i]),  # Pokemon name
-                current_party_levels[i],  # Level
-                moves[0],  # Move 1
-                moves[1],  # Move 2
-                moves[2],  # Move 3
-                moves[3],  # Move 4
-                hp_string  # HP as a string
-            )
+        """
+        Reads party Pokémon data from memory, calculates correct HP,
+        and stores it along with other info in self.party_info.
+        """
+        self.party_info = {}
+
+        try:
+            # --- Read all data first ---
+
+            # Current HP Bytes (Lower Address First = Most Significant Byte for Big Endian)
+            party_current_hp_byte1 = [self.read_m(a) for a in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]]
+            party_current_hp_byte2 = [self.read_m(a) for a in [0xD16D, 0xD199, 0xD1C5, 0xD1F1, 0xD21D, 0xD249]]
+
+            # Max HP Bytes (Using YOUR ORIGINAL addresses - REVERTED)
+            # (Lower Address First = Most Significant Byte for Big Endian)
+            party_max_hp_byte1 = [self.read_m(a) for a in [0xD18D, 0xD1B9, 0xD1E5, 0xD211, 0xD23D, 0xD269]] # YOUR ORIGINAL ADDRESS LIST 1
+            party_max_hp_byte2 = [self.read_m(a) for a in [0xD18E, 0xD1BA, 0xD1E6, 0xD212, 0xD23E, 0xD26A]] # YOUR ORIGINAL ADDRESS LIST 2
+            # --- IF the standard addresses ARE correct (D16E/F, D19A/B etc.), uncomment below and comment out the two lines above ---
+            # party_max_hp_byte1 = [self.read_m(a) for a in [0xD16E, 0xD19A, 0xD1C6, 0xD1F2, 0xD21E, 0xD24A]] # Standard Address List 1
+            # party_max_hp_byte2 = [self.read_m(a) for a in [0xD16F, 0xD19B, 0xD1C7, 0xD1F3, 0xD21F, 0xD24B]] # Standard Address List 2
+            # --- End Address Choice ---
+
+            party_levels = [self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]
+            party_species_ids = [self.read_m(a) for a in [0xD16B, 0xD197, 0xD1C3, 0xD1EF, 0xD21B, 0xD247]]
+            party_move1_ids = [self.read_m(a) for a in [0xD173, 0xD19F, 0xD1CB, 0xD1F7, 0xD223, 0xD24F]]
+            party_move2_ids = [self.read_m(a) for a in [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250]]
+            party_move3_ids = [self.read_m(a) for a in [0xD175, 0xD1A1, 0xD1CD, 0xD1F9, 0xD225, 0xD251]]
+            party_move4_ids = [self.read_m(a) for a in [0xD176, 0xD1A2, 0xD1CE, 0xD1FA, 0xD226, 0xD252]]
+
+            # --- Process data for each party slot ---
+            for i in range(6):
+                species_id = party_species_ids[i]
+                if species_id == 0 or species_id == 0xFF:
+                    continue # Skip empty slot
+
+                # **FIX 2b: Combine HP bytes as Big Endian**
+                # current_hp = (Most Significant Byte << 8) | Least Significant Byte
+                # Most Significant Byte is usually at the LOWER memory address (_byte1)
+                current_hp = (party_current_hp_byte1[i] << 8) | party_current_hp_byte2[i]
+                max_hp = (party_max_hp_byte1[i] << 8) | party_max_hp_byte2[i]
+
+                # Create the display string
+                hp_string = f"{current_hp}/{max_hp}"
+
+                # Get Pokemon Name from Species ID
+                pokemon_name = self.get_pokemon_name(species_id)
+
+                # Get Move Names from IDs
+                # **FIX 1: Add '+ 1' back if your mapping function requires it**
+                moves = [
+                    self.get_move_names_map(party_move1_ids[i] + 1),
+                    self.get_move_names_map(party_move2_ids[i] + 1),
+                    self.get_move_names_map(party_move3_ids[i] + 1),
+                    self.get_move_names_map(party_move4_ids[i] + 1)
+                ]
+                # --- If '+ 1' was NOT needed, remove it from the 4 lines above ---
+
+                level = party_levels[i]
+                party_key = f"pokemon_{i+1}"
+
+                # Store data including integer HP values
+                self.party_info[party_key] = (
+                    pokemon_name,    # 0: Pokemon name (string)
+                    level,           # 1: Level (int)
+                    moves[0],        # 2: Move 1 name (string)
+                    moves[1],        # 3: Move 2 name (string)
+                    moves[2],        # 4: Move 3 name (string)
+                    moves[3],        # 5: Move 4 name (string)
+                    hp_string,       # 6: HP display string (string)
+                    current_hp,      # 7: Current HP (int)
+                    max_hp           # 8: Max HP (int)
+                )
+
+        except Exception as e:
+            # Ensure party_info is at least an empty dict if error occurs
+            self.party_info = {}
 
     def get_levels_reward(self): 
         ## Do this by taking the max for each pokemon encountered
@@ -983,7 +1033,7 @@ class RedGymEnv(Env):
             "ir": self.get_immediate_revisit_penalty(), #Penalizes immediate backtracking
             "move": self.reward_scale * self.move_rewards(), ## Reward for learning stronger moves
             "HMs": self.reward_scale * self.has_HMs(),
-            #"ucut": self.reward_scale * self.has_used_cut()
+            "ucut": self.reward_scale * self.has_used_cut
         }
 
         return state_scores
@@ -1015,13 +1065,13 @@ class RedGymEnv(Env):
                     if self.last_health > 0:
                         heal_amount = cur_health - self.last_health
                         self.total_healing_rew += heal_amount
-        else:
-            self.died_count += 1
-            self.last_health = 1
-            if (
-                self.disable_wild_encounters
-            ):
-                self.pyboy.set_memory_value(0xD887, 0X0A)
+                    else:
+                        self.died_count += 1
+                        self.last_health = 1
+                        if (
+                            self.disable_wild_encounters
+                        ):
+                            self.pyboy.set_memory_value(0xD887, 0X0A)
 
     def read_hp_fraction(self):
         hp_sum = sum([
@@ -1106,82 +1156,188 @@ class RedGymEnv(Env):
                 if self.read_m(0xD250) == 45: # Replace Growl with Cut
                     self.set_m(0xD250, 15)
 
+    def _execute_cut_sequence(self, pokemon_index):
+        """
+        Executes the button presses for CUT using the Pokemon at the given index (0-5).
+        Returns True if sequence seems successful, False otherwise.
+        """
+        try:
+            # Simple fixed ticks for menus often work better
+            menu_tick_duration = 8
+            action_tick_duration = 24 # Longer pause after actions
+
+            # Open start menu
+            self.pyboy.button("START")
+            self.pyboy.tick(action_tick_duration)
+            # TODO: Add check here: Is Start Menu open? (e.g., check wMenuJoypadPoll + wCurrentMenuItem)
+
+            # Select Pokemon menu item (usually index 1)
+            # Assumes 'Pokemon' is the second item (index 1)
+            if self.read_m(self.pyboy.symbol_lookup("wCurrentMenuItem")[1]) != 0: # If not already on first item
+                 self.pyboy.button("UP") # Go to top
+                 self.pyboy.tick(menu_tick_duration)
+            self.pyboy.button("DOWN") # Go to Pokemon (item 1)
+            self.pyboy.tick(menu_tick_duration)
+            # TODO: Verify wCurrentMenuItem is now 1
+
+            self.pyboy.button("A")
+            self.pyboy.tick(action_tick_duration)
+            # TODO: Check if party screen is open (e.g., check wPartyMenuCursorBackup?)
+
+            # Select the correct Pokemon
+            # Move cursor down 'pokemon_index' times
+            for _ in range(pokemon_index):
+                 self.pyboy.button("DOWN")
+                 self.pyboy.tick(menu_tick_duration)
+            # TODO: Verify cursor is on the right Pokemon?
+
+            # Select Pokemon ('A')
+            self.pyboy.button("A")
+            self.pyboy.tick(action_tick_duration)
+            # TODO: Check if Pokemon submenu is open
+
+            # Select CUT from submenu
+            # This part is tricky - finding CUT reliably might still need looping
+            # Or assume CUT is always the first field move? (Risky)
+            # Using the wFieldMoves approach from original code:
+            found_cut = False
+            _, wFieldMoves = self.pyboy.symbol_lookup("wFieldMoves")
+            for _ in range(5): # Max 5 items: CUT, FLY, SURF, STR, FLASH
+                 current_item_index = self.read_m(self.pyboy.symbol_lookup("wCurrentMenuItem")[1])
+                 field_moves = self.pyboy.memory[wFieldMoves : wFieldMoves + 4] # Read current field moves
+                 if current_item_index < len(field_moves) and field_moves[current_item_index] == FieldMoves.CUT.value:
+                     found_cut = True
+                     break
+                 self.pyboy.button("DOWN")
+                 self.pyboy.tick(menu_tick_duration)
+
+            if not found_cut:
+                # Press B multiple times to back out safely
+                for _ in range(4):
+                    self.pyboy.button("B")
+                    self.pyboy.tick(action_tick_duration)
+                return False
+
+            # Use CUT ('A')
+            self.pyboy.button("A")
+            self.pyboy.tick(action_tick_duration * 2) # Wait longer for cut animation/text
+
+            # Need to wait for the "used Cut!" message and field effect
+            # This might require waiting until control is returned (e.g., wPlayerStandingTile != 0 then == 0 again)
+            # Or just a longer fixed delay
+            self.pyboy.tick(80) # Wait for cut animation/message box
+
+            # Press A/B to clear message box if necessary
+            self.pyboy.button("A")
+            self.pyboy.tick(action_tick_duration)
+            self.pyboy.button("B") # Just in case
+            self.pyboy.tick(action_tick_duration)
+
+            self.has_used_cut = getattr(self, 'has_used_cut', 0) + 1 # Increment counter safely
+            return True
+
+        except Exception as e:
+            # Attempt to back out of menus
+            try:
+                 for _ in range(4):
+                    self.pyboy.button("B")
+                    self.pyboy.tick(action_tick_duration)
+            except: pass # Ignore errors during bailout
+            return False
+        
+    def _find_pokemon_with_cut_index(self):
+        """
+        Finds the party index (0-5) of the first Pokemon with Cut.
+        Returns None if no Pokemon has Cut.
+        (This is a robust alternative to menu looping)
+        """
+        try:
+            MOVE_CUT_ID = 0x0F # Corresponds to 15
+            # Simplified: Assumes party structure similar to update_pokemon_info
+            # Adapt based on how you can quickly read party moves
+            party_move_offsets = [0xD173, 0xD19F, 0xD1CB, 0xD1F7, 0xD223, 0xD24F] # Start of moves for each mon
+            for i in range(6):
+                species_addr = 0xD16B + i * 44 # Check species ID to see if slot is valid
+                if self.read_m(species_addr) in [0, 0xFF]: continue # Skip empty
+
+                move_addr = party_move_offsets[i]
+                moves = [self.read_m(move_addr + j) for j in range(4)]
+                if MOVE_CUT_ID in moves:
+                    return i # Return index 0-5
+            return None
+        except Exception as e:
+            return None
+
     def cut_if_next(self):
         # https://github.com/pret/pokered/blob/d38cf5281a902b4bd167a46a7c9fd9db436484a7/constants/tileset_constants.asm#L11C8-L11C11
-        in_erika_gym = self.read_m("wCurMapTileset") == Tilesets.GYM.value
-        in_overworld = self.read_m("wCurMapTileset") == Tilesets.OVERWORLD.value
-        if self.read_m(0xD057) == 0 and (in_erika_gym or in_overworld):
+        # Check standing still
+        try:
+            # 1. Check basic conditions (standing still, valid map)
+            if self.read_m(0xD057) != 0: # wPlayerStandingTile check
+                # logging.debug("Player not standing still.") # Optional debug
+                return False
+            
+            TILE_MAP_WIDTH = 20
+            TILE_MAP_HEIGHT = 18
+            CUT_BUSH_OVERWORLD = 0x3D
+            CUT_TREE_GYM = 0x50
+
+            # Check map ID (USE THE CORRECT LOGIC FROM POINT 1 ABOVE)
+            map_x, map_y, map_n = self.get_game_coords()
+            map_n = int(map_n)
+            ERIKA_GYM_ID = 134
+            OVERWORLD_CUT_MAP_IDS = set(range(0, 89))
+            is_erika_gym = (map_n == ERIKA_GYM_ID)
+            is_overworld = (map_n in OVERWORLD_CUT_MAP_IDS)
+
+            is_erika_gym = (map_n == ERIKA_GYM_ID)
+            is_overworld = (map_n in OVERWORLD_CUT_MAP_IDS) # Check if current map is in the set
+
+            if not (is_overworld or is_erika_gym):
+                # print(f"DEBUG: Not on a relevant Cut map (Map ID: {map_n}). Exiting cut_if_next.") # DEBUG
+                return False # Exit if not on a relevant map
+            # 2. Check adjacent tiles
             _, wTileMap = self.pyboy.symbol_lookup("wTileMap")
-            tileMap = self.pyboy.memory[wTileMap : wTileMap + 20 * 18]
-            tileMap = np.array(tileMap, dtype=np.uint8)
-            tileMap = np.reshape(tileMap, (18, 20))
-            y, x = 8, 8
-            up, down, left, right = (
-                tileMap[y - 2 : y, x : x + 2],  # up
-                tileMap[y + 2 : y + 4, x : x + 2],  # down
-                tileMap[y : y + 2, x - 2 : x],  # left
-                tileMap[y : y + 2, x + 2 : x + 4],  # right
-            )
+            tileMap = self.pyboy.memory[wTileMap : wTileMap + TILE_MAP_WIDTH * TILE_MAP_HEIGHT]
+            tileMap = np.array(tileMap, dtype=np.uint8).reshape((TILE_MAP_HEIGHT, TILE_MAP_WIDTH))
+            # Player screen position (center)
+            y, x = 8, 8 # Center of the 18x20 screen buffer
+            direction_to_press = None
+            target_tile = CUT_TREE_GYM if is_erika_gym else CUT_BUSH_OVERWORLD
 
-            # Gym trees apparently get the same tile map as outside bushes
-            # GYM = 7
-            if (in_overworld and 0x3D in up) or (in_erika_gym and 0x50 in up):
-                self.pyboy.button("UP", delay=8)
-                self.pyboy.tick(self.action_freq, render=True)
-            elif (in_overworld and 0x3D in down) or (in_erika_gym and 0x50 in down):
-                self.pyboy.button("DOWN", delay=8)
-                self.pyboy.tick(self.action_freq, render=True)
-            elif (in_overworld and 0x3D in left) or (in_erika_gym and 0x50 in left):
-                self.pyboy.button("LEFT", delay=8)
-                self.pyboy.tick(self.action_freq, render=True)
-            elif (in_overworld and 0x3D in right) or (in_erika_gym and 0x50 in right):
-                self.pyboy.button("RIGHT", delay=8)
-                self.pyboy.tick(self.action_freq, render=True)
-            else:
-                return
+            # Check UP (Tiles at y=6,7 ; x=8,9)
+            if target_tile in tileMap[y - 2 : y, x : x + 2]:
+                direction_to_press = "UP"
+            # Check DOWN (Tiles at y=10,11 ; x=8,9)
+            elif target_tile in tileMap[y + 2 : y + 4, x : x + 2]:
+                direction_to_press = "DOWN"
+            # Check LEFT (Tiles at y=8,9 ; x=6,7)
+            elif target_tile in tileMap[y : y + 2, x - 2 : x]:
+                direction_to_press = "LEFT"
+            # Check RIGHT (Tiles at y=8,9 ; x=10,11)
+            elif target_tile in tileMap[y : y + 2, x + 2 : x + 4]:
+                direction_to_press = "RIGHT"
 
-            # open start menu
-            self.pyboy.button("START", delay=8)
-            self.pyboy.tick(self.action_freq, self.animate_scripts)
-            # scroll to pokemon
-            # 1 is the item index for pokemon
-            for _ in range(24):
-                if self.pyboy.memory[self.pyboy.symbol_lookup("wCurrentMenuItem")[1]] == 1:
-                    break
-                self.pyboy.button("DOWN", delay=8)
-                self.pyboy.tick(self.action_freq, render=self.animate_scripts)
-            self.pyboy.button("A", delay=8)
-            self.pyboy.tick(self.action_freq, self.animate_scripts)
+            if direction_to_press is None:
+                # logging.debug("No cuttable object adjacent.") # Optional debug
+                return False # No cuttable object found
+            
+            # 3. Face the object
+            self.pyboy.button(direction_to_press)
+            self.pyboy.tick(8) # Short tick to register facing direction
 
-            # find pokemon with cut
-            # We run this over all pokemon so we dont end up in an infinite for loop
-            for _ in range(7):
-                self.pyboy.button("DOWN", delay=8)
-                self.pyboy.tick(self.action_freq, self.animate_scripts)
-                party_mon = self.pyboy.memory[self.pyboy.symbol_lookup("wCurrentMenuItem")[1]]
-                _, addr = self.pyboy.symbol_lookup(f"wPartyMon{party_mon%6+1}Moves")
-                if 0xF in self.pyboy.memory[addr : addr + 4]:
-                    break
+            # 4. Find Pokemon with Cut
+            cut_pokemon_index = self._find_pokemon_with_cut_index()
+            if cut_pokemon_index is None:
+                return False # Cannot proceed
 
-            # Enter submenu
-            self.pyboy.button("A", delay=8)
-            self.pyboy.tick(4 * self.action_freq, self.animate_scripts)
+            # 5. Execute the sequence
+            success = self._execute_cut_sequence(cut_pokemon_index)
 
-            # Scroll until the field move is found
-            _, wFieldMoves = self.pyboy.symbol_lookup("wFieldMoves")
-            field_moves = self.pyboy.memory[wFieldMoves : wFieldMoves + 4]
+            return success # Return True if sequence attempted/succeeded, False if failed
 
-            for _ in range(10):
-                current_item = self.read_m("wCurrentMenuItem")
-                if current_item < 4 and FieldMoves.CUT.value == field_moves[current_item]:
-                    break
-                self.pyboy.button("DOWN", delay=8)
-                self.pyboy.tick(self.action_freq, self.animate_scripts)
-
-            # press a bunch of times
-            for _ in range(5):
-                self.pyboy.button("A", delay=8)
-                self.pyboy.tick(4 * self.action_freq, self.animate_scripts)
+        except Exception as e:
+            return False # Return False on any unexpected error
 
     def update_pp_heal_reward(self):
         cur_power = self.get_low_power_moves()
