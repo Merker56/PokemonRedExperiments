@@ -144,9 +144,10 @@ class RedGymEnv(Env):
         #log_level("ERROR")
         self.pyboy = PyBoy(
             config["gb_path"],
+            symbol_file=config["symbol_file"],
             debugging=False,
             disable_input=False,
-            window_type=head,
+            window_type=head
         )
 
         self.screen = self.pyboy.botsupport_manager().screen()
@@ -291,7 +292,8 @@ class RedGymEnv(Env):
             self.update_10_pokeballs() # Always have 10 pokeballs    
             self.force_learn_HMs() # Force learn HMs
             if self.headless == False:
-                prepare_overlay_data(self) # Update overlay data
+                print("Updating overlay data...")
+                prepare_overlay_data(self, location = self.get_current_location(), badges = self.get_badges_status()) # Update overlay data
 
         self.last_health = self.read_hp_fraction()
 
@@ -473,8 +475,10 @@ class RedGymEnv(Env):
     def find_location_by_id(self, map_data, location_id):
         if "regions" in map_data and isinstance(map_data["regions"], list):
             for region in map_data["regions"]:
-                if region["id"] == location_id:
+                if region["id"] == str(location_id):
                     return region["name"]
+        else:
+            print(f"Invalid map data format or missing 'regions' key.")
         return None  # Return None if no matching id is found
 
     def get_current_location(self):
@@ -1059,12 +1063,13 @@ class RedGymEnv(Env):
         cur_health = self.read_hp_fraction()
         x_pos, y_pos, map_n = self.get_game_coords()
         if self.read_m(0xD163) == self.party_size:
-            if map_n in [41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 182]:
             # if health increased and party size did not change
-                if cur_health > self.last_health:
+            if cur_health > self.last_health:
                     if self.last_health > 0:
-                        heal_amount = cur_health - self.last_health
-                        self.total_healing_rew += heal_amount
+                        if map_n in [41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 182]:
+                            # Make sure in pokemon center
+                            heal_amount = cur_health - self.last_health
+                            self.total_healing_rew += heal_amount
                     else:
                         self.died_count += 1
                         self.last_health = 1
@@ -1255,7 +1260,7 @@ class RedGymEnv(Env):
             MOVE_CUT_ID = 0x0F # Corresponds to 15
             # Simplified: Assumes party structure similar to update_pokemon_info
             # Adapt based on how you can quickly read party moves
-            party_move_offsets = [0xD173, 0xD19F, 0xD1CB, 0xD1F7, 0xD223, 0xD24F] # Start of moves for each mon
+            party_move_offsets = [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250] # Start of moves for each mon
             for i in range(6):
                 species_addr = 0xD16B + i * 44 # Check species ID to see if slot is valid
                 if self.read_m(species_addr) in [0, 0xFF]: continue # Skip empty
@@ -1272,34 +1277,49 @@ class RedGymEnv(Env):
         # https://github.com/pret/pokered/blob/d38cf5281a902b4bd167a46a7c9fd9db436484a7/constants/tileset_constants.asm#L11C8-L11C11
         # Check standing still
         try:
-            # 1. Check basic conditions (standing still, valid map)
-            if self.read_m(0xD057) != 0: # wPlayerStandingTile check
-                # logging.debug("Player not standing still.") # Optional debug
+            # Checking if player has Cascade Badge, otherwise no need to check for cuttable objects
+            WRAM_OBTAINED_BADGES = 0xD356
+            CASCADE_BADGE_BIT_INDEX = 1 # Bit index for read_bit (0-7)
+            has_cascade_badge = self.read_bit(WRAM_OBTAINED_BADGES, CASCADE_BADGE_BIT_INDEX)
+            if not has_cascade_badge:
+                # print("DEBUG: Missing Cascade Badge") # Optional
                 return False
             
+            WRAM_MAP_GROUP = 0xD35E
+            WRAM_MAP_NUMBER = 0xD35F
+            WRAM_TILE_MAP = 0xD4A0
+            WRAM_PARTY_COUNT = 0xD163
+            WRAM_PARTY_MON_START = 0xD16B
+            PARTY_MON_STRUCT_SIZE = 44
+            PARTY_MON_MOVES_OFFSET = 14 # Offset from start of Pokemon struct to Move 1
+            MOVE_CUT_ID = 0x0F
             TILE_MAP_WIDTH = 20
             TILE_MAP_HEIGHT = 18
             CUT_BUSH_OVERWORLD = 0x3D
             CUT_TREE_GYM = 0x50
-
             # Check map ID (USE THE CORRECT LOGIC FROM POINT 1 ABOVE)
-            map_x, map_y, map_n = self.get_game_coords()
-            map_n = int(map_n)
+            current_map_number = self.read_m(WRAM_MAP_NUMBER)
             ERIKA_GYM_ID = 134
             OVERWORLD_CUT_MAP_IDS = set(range(0, 89))
-            is_erika_gym = (map_n == ERIKA_GYM_ID)
-            is_overworld = (map_n in OVERWORLD_CUT_MAP_IDS)
-
-            is_erika_gym = (map_n == ERIKA_GYM_ID)
-            is_overworld = (map_n in OVERWORLD_CUT_MAP_IDS) # Check if current map is in the set
+            is_erika_gym = (current_map_number == ERIKA_GYM_ID)
+            is_overworld = (current_map_number in OVERWORLD_CUT_MAP_IDS) # Check if current map is in the set
 
             if not (is_overworld or is_erika_gym):
-                # print(f"DEBUG: Not on a relevant Cut map (Map ID: {map_n}). Exiting cut_if_next.") # DEBUG
                 return False # Exit if not on a relevant map
             # 2. Check adjacent tiles
-            _, wTileMap = self.pyboy.symbol_lookup("wTileMap")
-            tileMap = self.pyboy.memory[wTileMap : wTileMap + TILE_MAP_WIDTH * TILE_MAP_HEIGHT]
-            tileMap = np.array(tileMap, dtype=np.uint8).reshape((TILE_MAP_HEIGHT, TILE_MAP_WIDTH))
+            tileMap_bytes_list = []
+            start_addr = WRAM_TILE_MAP
+            num_bytes = TILE_MAP_WIDTH * TILE_MAP_HEIGHT
+            for i in range(num_bytes):
+                byte_val = self.read_m(start_addr + i)
+                tileMap_bytes_list.append(byte_val)
+
+            # Reshape into the map
+            try:
+                tileMap = np.array(tileMap_bytes_list, dtype=np.uint8).reshape((TILE_MAP_HEIGHT, TILE_MAP_WIDTH))
+            except ValueError as e:
+                print(f"ERROR: Reshape failed. Bytes read: {len(tileMap_bytes_list)}. Error: {e}")
+                return False
             # Player screen position (center)
             y, x = 8, 8 # Center of the 18x20 screen buffer
             direction_to_press = None
@@ -1317,11 +1337,12 @@ class RedGymEnv(Env):
             # Check RIGHT (Tiles at y=8,9 ; x=10,11)
             elif target_tile in tileMap[y : y + 2, x + 2 : x + 4]:
                 direction_to_press = "RIGHT"
-
             if direction_to_press is None:
                 # logging.debug("No cuttable object adjacent.") # Optional debug
                 return False # No cuttable object found
-            
+            else:
+                print("Found cut location!") # DEBUG
+                self.has_used_cut = getattr(self, 'has_used_cut', 0) + 0.01 # Increment counter safely
             # 3. Face the object
             self.pyboy.button(direction_to_press)
             self.pyboy.tick(8) # Short tick to register facing direction
@@ -1329,7 +1350,10 @@ class RedGymEnv(Env):
             # 4. Find Pokemon with Cut
             cut_pokemon_index = self._find_pokemon_with_cut_index()
             if cut_pokemon_index is None:
+                print(f"Agent {self.agent_id}: No Pokemon with Cut found in party.") # DEBUG
                 return False # Cannot proceed
+            else:
+                self.has_used_cut = getattr(self, 'has_used_cut', 0) + 0.1 # Increment counter safely
 
             # 5. Execute the sequence
             success = self._execute_cut_sequence(cut_pokemon_index)
@@ -1337,7 +1361,7 @@ class RedGymEnv(Env):
             return success # Return True if sequence attempted/succeeded, False if failed
 
         except Exception as e:
-            return False # Return False on any unexpected error
+            return e # Return False on any unexpected error
 
     def update_pp_heal_reward(self):
         cur_power = self.get_low_power_moves()

@@ -38,7 +38,7 @@ def update_agent_overlay(agent_id, party_info, location=None, badges=None, steps
     except IOError as e:
         print(f"Error writing overlay file for Agent {agent_id}: {e}")
 
-def prepare_overlay_data(self):
+def prepare_overlay_data(self, location=None, badges=None):
     """
     Method to be called in your main PyBoy environment class
     Prepares data for overlay updates
@@ -49,8 +49,8 @@ def prepare_overlay_data(self):
     # You can add additional data collection here
     overlay_data = {
         "party_info": self.party_info,
-        "location": self.get_current_location(),  # You'll need to implement this method
-        "badges": self.get_badges_status(),  # You'll need to implement this method
+        "location": location,  # You'll need to implement this method
+        "badges": badges, 
         "steps": self.step_count  # Track steps in your environment
     }
     
