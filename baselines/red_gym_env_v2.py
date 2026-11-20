@@ -1,5 +1,10 @@
 import uuid
 import json
+import gc
+import io
+import time
+import faulthandler
+import os
 from pathlib import Path
 import numpy as np
 from skimage.transform import downscale_local_mean
@@ -19,8 +24,26 @@ from tilesets import Tilesets
 from field_moves import FieldMoves
 from generate_stream_overlay import update_agent_overlay, prepare_overlay_data
 
+# Near the top with other imports
+from enum import Enum, auto
+
+# You can place this Enum definition near the top of the RedGymEnv class definition
+class CutState(Enum):
+    IDLE = auto()                   # Not in the cut sequence
+    FACE_BUSH = auto()              # Turn to face the bush
+    OPEN_START_MENU = auto()        # Press START
+    SELECT_POKEMON_MENU = auto()    # Navigate to 'POKéMON'
+    OPEN_POKEMON_LIST = auto()      # Press 'A' to see party
+    SELECT_POKEMON_WITH_CUT = auto()# Navigate to the correct Pokémon
+    OPEN_POKEMON_SUBMENU = auto()   # Press 'A' on the Pokémon
+    SELECT_CUT_MOVE = auto()        # Navigate to 'CUT' in the submenu
+    EXECUTE_CUT = auto()            # Press 'A' to use CUT
+    WAIT_FOR_ANIMATION = auto()     # Wait for the cut effect/text
+    CLEANUP = auto()                # Finalize and return to IDLE
+    FAIL_AND_BAIL = auto()          # Recover from an unexpected state
+
 event_flags_start = 0xD747
-event_flags_end = 0xD7F6 # 0xD761 # 0xD886 temporarily lower event flag range for obs input
+event_flags_end = 0xD7F6 # This must be the MAX value for the obs space definition
 museum_ticket = (0xD754, 0)
 
 class RedGymEnv(Env):
@@ -28,13 +51,31 @@ class RedGymEnv(Env):
         self.s_path = config["session_path"]
         self.save_final_state = config["save_final_state"]
         self.print_rewards = config["print_rewards"]
+        self.log_agent_id = config.get("log_agent_id", 0)
         self.headless = config["headless"]
         self.init_state = config["init_state"]
         self.act_freq = config["action_freq"]
         self.max_steps = config["max_steps"]
         self.save_video = config["save_video"]
         self.fast_video = config["fast_video"]
-        self.frame_stacks = 3
+        self.print_freq = config.get("print_freq", 100)
+        self.update_freq = config.get("update_freq", 100)
+        self.save_debug_jpegs = config.get("save_debug_jpegs", True)
+        self.render_resize_mode = config.get("render_resize_mode", "mean")
+        self.frame_stacks = config.get("frame_stacks", 3)
+        self.reset_state_mode = config.get("reset_state_mode", "disk")
+        self.release_action_tick = config.get("release_action_tick", -1)
+        self.trace_step_phases = config.get("trace_step_phases", False)
+        self.trace_first_n_steps = config.get("trace_first_n_steps", 120)
+        self.trace_from_reset = config.get("trace_from_reset", 2)
+        self.trace_step_file = config.get("trace_step_file", False)
+        self.trace_tick_every = config.get("trace_tick_every", 8)
+        self.trace_flush_every = config.get("trace_flush_every", 1)
+        self.hang_dump_enabled = config.get("hang_dump_enabled", False)
+        self.hang_dump_timeout_s = config.get("hang_dump_timeout_s", 60)
+        self.reset_stagger_s = config.get("reset_stagger_s", 0.0)
+        self.gc_every_n_resets = config.get("gc_every_n_resets", 0)
+        self.recent_actions = np.zeros((self.frame_stacks,), dtype=np.uint8)
         self.agent_id = config["rank"]
         self.explore_weight = (
             1 if "explore_weight" not in config else config["explore_weight"]
@@ -48,12 +89,31 @@ class RedGymEnv(Env):
             else config["instance_id"]
         )
         self.s_path.mkdir(exist_ok=True)
+        self.trace_path = self.s_path / Path(f"trace_agent_{config['rank']}.log")
+        self._trace_file = None
+        self._trace_write_count = 0
+        if self.trace_step_file:
+            self._trace_file = open(self.trace_path, "a", encoding="utf-8")
+        self.hang_dump_path = self.s_path / Path(f"hang_agent_{config['rank']}.log")
+        self._hang_dump_file = None
+        self._step_trace_t0_ns = 0
         self.full_frame_writer = None
         self.model_frame_writer = None
         self.map_frame_writer = None
         self.reset_count = 0
         self.all_runs = []
+        self.reward_cache = {}
+        self.cached_event_bits = np.zeros((event_flags_end - event_flags_start) * 8, dtype=np.int8)
+        self.can_cut_badge = False
+        self.can_cut_move = False
+        self.menu_check_complete = False
+        self.cut_state = CutState.IDLE
+        self.cut_state_timer = 0
+        self.cut_pokemon_party_idx = 0
+        self.event_flags_end_short = 0xD761 # The short limit for early-game observation
         self.has_used_cut = 0
+        self.maps_visited = set()
+        self.last_map_checked = None  # Cache to avoid unnecessary reads
 
         self.essential_map_locations = {
             v:i for i,v in enumerate([
@@ -70,7 +130,7 @@ class RedGymEnv(Env):
             }
         else:
             raise ValueError("Disable wild enounters must be a boolean or a list of MapIds")
-        self.infinite_money = config["infinite_money"]
+        self.infinite_money = False
         self.recent_coords = deque([0] * 10, maxlen=10)  # Initialize with 10 zeros & Track last 50 positions
         self.local_area_hashes = set()
         self.progress_reward = []
@@ -108,6 +168,56 @@ class RedGymEnv(Env):
             WindowEvent.RELEASE_BUTTON_START
         ]
 
+        self.cut_state = CutState.IDLE
+        self.cut_state_timer = 0
+        self.cut_pokemon_party_idx = 0
+        self.cut_direction_to_face = None # 
+
+        # --- CRITICAL HARDCODED ADDRESSES (VERIFY THESE FOR POKEMON RED 1.0/1.1 ENGLISH) ---
+        self.ADDR_WRAM_PLAYER_DIRECTION = 0xC109     # Current facing direction of the player
+        self.ADDR_WRAM_OBTAINED_BADGES = 0xD356      # Bitfield for obtained badges
+        self.CASCADE_BADGE_BIT_INDEX = 1             # Bit 1 (0-indexed) for Cascade Badge
+
+        self.ADDR_WRAM_MENU_JOYPAD_POLL = 0xD057     # If non-zero, a menu is active that polls joypad
+                                                    # Could also be wJoyIgnore (0xFFF0) or wMenuWatchMovingArrow (0xC2A9)
+                                                    # but 0xD057 is common for active d-pad menus.
+
+        self.ADDR_WRAM_MAP_ID = 0xD35E               # Current Map ID (e.g., Pallet Town, Route 1, Erika's Gym)
+                                                    # Sometimes this is wMapGroup, and wMapNumber (0xD35F) is also needed.
+                                                    # For simplicity, using one if your game version maps directly.
+        self.ERIKA_GYM_MAP_ID_EXPECTED = 134         # Expected ID for Erika's Gym
+        self.OVERWORLD_MAX_MAP_ID_EXPECTED = 88      # Maps 0-88 are generally overworld
+
+        self.ADDR_WRAM_TILE_MAP_START = 0xD4A0       # Start of the 20x18 visible tile map in WRAM
+        self.TILE_MAP_WIDTH = 20
+        self.TILE_MAP_HEIGHT = 18
+        self.BUSH_TILE_IDS_OVERWORLD = (46, 61)           # VERIFY this. (Previously discussed 0x2D / 45)
+        self.BUSH_TILE_ID_GYM = 0x50                 # VERIFY this for Erika's Gym tree
+
+        # Menu Cursor Addresses (These are the trickiest and can vary by menu context)
+        # For the main START menu:
+        self.ADDR_WRAM_START_MENU_CURSOR_POS = 0xC68B # Common for wCurrentMenuItem
+        # For the POKéMON party list screen:
+        self.ADDR_WRAM_PARTY_LIST_CURSOR_POS = 0xC68B # Often reused, but VERIFY
+        # For the POKéMON's individual field move list (after selecting a Pokémon):
+        self.ADDR_WRAM_FIELD_MOVE_LIST_CURSOR_POS = 0xC68B # Often reused, but VERIFY
+
+        # Field Moves Data
+        # This is where it gets complex. `wFieldMoves` isn't a simple array of HM IDs.
+        # It's usually a list of POINTERS or specific data related to the *current Pokémon's* usable field moves.
+        # We might need to find a more direct way if this is too complex without symbols.
+        # A common approach is that after selecting a Pokemon, the game populates a temporary
+        # RAM area (e.g., starting at 0xD0A2 as you had, or another like wListMenuID)
+        # with the IDs of field moves that Pokemon can use.
+        # The `wCurrentMenuItem` (or equivalent for that specific menu) would then index into THIS temporary list.
+        self.ADDR_WRAM_CURRENT_POKEMON_FIELD_MOVES_LIST_START = 0xD0A2 # Example, VERIFY (wListMenuID or similar)
+        self.FIELD_MOVE_ID_FOR_CUT = 0x01 # The ID representing CUT in that temporary list (often 1 if CUT is the first HM)
+                                        # This is NOT the global move ID 0x0F.
+                                        # It's how the menu system identifies "CUT" among field moves.
+
+        # Global Move ID for CUT (used by _find_pokemon_with_cut_index)
+        self.GLOBAL_MOVE_ID_CUT = 0x0F
+
         # load event names (parsed from https://github.com/pret/pokered/blob/91dc3c9f9c8fd529bb6e8307b58b96efa0bec67e/constants/event_constants.asm)
         with open("events.json") as f:
             event_names = json.load(f)
@@ -144,33 +254,61 @@ class RedGymEnv(Env):
         #log_level("ERROR")
         self.pyboy = PyBoy(
             config["gb_path"],
-            symbol_file=config["symbol_file"],
-            debugging=False,
-            disable_input=False,
+            symbols=config["symbol_file"],
+            log_level='CRITICAL',
+            sound_emulated = False,
+            no_input=False,
             window_type=head
         )
 
-        self.screen = self.pyboy.botsupport_manager().screen()
+        self.screen = self.pyboy.screen
 
         if not config["headless"]:
             self.pyboy.set_emulation_speed(6)
+        # Keep a cached copy of the initial savestate for faster, consistent resets.
+        with open(self.init_state, "rb") as f:
+            self._init_state_bytes = f.read()
+
+        # Optional: dump stack traces if a worker thread stops making progress
+        # (useful for pinpointing hard hangs in emulator tick paths).
+        if self.hang_dump_enabled:
+            self._hang_dump_file = open(self.hang_dump_path, "a", encoding="utf-8")
+            faulthandler.enable(file=self._hang_dump_file, all_threads=True)
+            faulthandler.dump_traceback_later(
+                self.hang_dump_timeout_s,
+                repeat=True,
+                file=self._hang_dump_file,
+            )
 
     def reset(self, seed=None, options={}):
         self.seed = seed
-        # restart game, skipping credits
-        with open(self.init_state, "rb") as f:
-            self.pyboy.load_state(f)
+        next_reset_count = self.reset_count + 1
+        if self.gc_every_n_resets > 0 and next_reset_count % self.gc_every_n_resets == 0:
+            gc.collect()
+        if self.reset_stagger_s > 0:
+            time.sleep(self.reset_stagger_s * self.agent_id)
+        if self.reset_state_mode == "memory":
+            self.pyboy.load_state(io.BytesIO(self._init_state_bytes))
+        else:
+            with open(self.init_state, "rb") as f:
+                self.pyboy.load_state(f)
 
         self.init_map_mem()
 
         self.agent_stats = []
+        self.recent_actions = np.zeros((self.frame_stacks,), dtype=np.uint8)
 
         self.explore_map_dim = GLOBAL_MAP_SHAPE
-        self.explore_map = np.zeros(self.explore_map_dim, dtype=np.uint8)
 
-        self.recent_screens = np.zeros( self.output_shape, dtype=np.uint8)
+        if hasattr(self, 'recent_screens'):
+            self.recent_screens.fill(0)  # Clear existing array
+        else:
+            self.recent_screens = np.zeros(self.output_shape, dtype=np.uint8)
         
-        self.recent_actions = np.zeros((self.frame_stacks,), dtype=np.uint8)
+        if hasattr(self, 'explore_map'):
+            self.explore_map.fill(0)  # Clear existing array
+        else:
+            self.explore_map = np.zeros(self.explore_map_dim, dtype=np.uint8)
 
         self.levels_satisfied = False
         self.base_explore = 0
@@ -196,14 +334,18 @@ class RedGymEnv(Env):
         self.frontier_reward = 0
         self.path_progress = set()
         self.last_coord = []
+        self.reward_cache = {}
+        self.can_cut_badge = False
+        self.can_cut_move = False
+        self.menu_check_complete = False
+        self.cut_state = CutState.IDLE
+        self.cut_state_timer = 0
+        self.cut_pokemon_party_idx = 0
+        self.cut_direction_to_face = None
         self.has_used_cut = 0
-
-        self.base_event_flags = sum([
-                self.bit_count(self.read_m(i))
-                for i in range(event_flags_start, event_flags_end)
-        ])
-
         self.current_event_flags_set = {}
+        self.maps_visited = set()
+        self.last_map_checked = None  # Cache to avoid unnecessary reads
 
         self.pokemon_levels = {} #Store pokemon id and max level, updating each iteration
         self.party_info = {} #Store pokemon id, moves, levels, and pp
@@ -211,171 +353,202 @@ class RedGymEnv(Env):
         # self.max_steps += 128
 
         self.max_map_progress = 0
+        self._refresh_event_bits_cache()
         self.progress_reward = self.get_game_state_reward()
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
-        self.reset_count += 1
-        return self._get_obs(), {}
+        self.reset_count = next_reset_count
+        # Calculate initial health and pass it to _get_obs
+        initial_health = self.read_hp_fraction()
+    
+        return self._get_obs(initial_health), {}
 
     def init_map_mem(self):
         self.seen_coords = {}
 
     def render(self, reduce_res=True):
-        game_pixels_render = self.screen.screen_ndarray()[:,:,0:1]  # (144, 160, 3)
+        game_pixels_render = self.screen.ndarray[:,:,0:1]  # (144, 160, 3)
         if reduce_res:
-            game_pixels_render = (
-                downscale_local_mean(game_pixels_render, (2,2,1))
-            ).astype(np.uint8)
+            if self.render_resize_mode == "stride":
+                # Faster than local mean and usually sufficient for RL state.
+                game_pixels_render = game_pixels_render[::2, ::2, :]
+            else:
+                game_pixels_render = (
+                    downscale_local_mean(game_pixels_render, (2,2,1))
+                ).astype(np.uint8)
         return game_pixels_render
     
-    def _get_obs(self):
+    def _get_obs(self, cur_health):
         
         screen = self.render()
 
         self.update_recent_screens(screen)
-        
-        # normalize to approx 0-1
-        level_sum = 0.02 * sum([
-            self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]
-        ])
-
-        recent_path = np.array(self.recent_coords, dtype=np.uint8)  # Last 10 areas
+        recent_path = np.fromiter(self.recent_coords, dtype=np.int32, count=10)
+        badge_bits = ((self.read_m(0xD356) >> np.arange(7, -1, -1)) & 1).astype(np.int8)
 
         observation = {
             "screens": self.recent_screens,
-            "health": np.array([self.read_hp_fraction()]),
-            "level": self.fourier_encode(level_sum), ## May need to come back and change this to the same as the level reward
-            "badges": np.array([int(bit) for bit in f"{self.read_m(0xD356):08b}"], dtype=np.int8),
-            "events": np.array(self.read_event_bits(), dtype=np.int8),
+            "health": np.array([cur_health]), # USE THE PASSED-IN VALUE
+            "level": self.reward_cache.get('level_encoded', np.zeros(self.enc_freqs)), ## May need to come back and change this to the same as the level reward
+            "badges": badge_bits,
+            "events": self.cached_event_bits,
             "map": self.get_explore_map()[:, :, None],
             "recent_actions": self.recent_actions,
-            "recent_path": np.array(recent_path, dtype=np.int32),
+            "recent_path": recent_path,
         }
 
         return observation
 
     def step(self, action):
-
+        self._step_trace_t0_ns = time.perf_counter_ns()
+        self._trace_step_phase("step_begin")
         if self.save_video and self.step_count == 0:
             self.start_video()
 
-        self.run_action_on_emulator(action)
-        self.append_agent_stats(action)
+        # Core state machine logic:
+        # If the cut sequence is active, it takes over the emulator.
+        # Otherwise, the agent's action is performed.
+        if self.cut_state != CutState.IDLE:
+            self._trace_step_phase("cut_state_tick_begin")
+            self._tick_cut_state_machine()
+            self._trace_step_phase("cut_state_tick_end")
+        else:
+            self._trace_step_phase("action_tick_begin")
+            self.run_action_on_emulator(action)
+            self._trace_step_phase("action_tick_end")
 
+        self._trace_step_phase("post_emulator")
         self.update_recent_actions(action)
-
         self.update_explore_map()
 
-        self.update_heal_reward()
+        cur_health = self.read_hp_fraction()
+        self.update_heal_reward(cur_health)
 
         self.party_size = self.read_m(0xD163)
-
         self.check_in_menus()
-
-        self.cut_if_next()
-
-        # Compute new reward
         new_reward = self.update_reward()
-
         self.update_seen_coords()
+        self._trace_step_phase("post_reward")
 
-        if (
-            self.disable_wild_encounters
-            and self.read_m(0xD35E) in [59, 60, 61] ##Shutting off fights in Mt Moon
-        ):
-            self.pyboy.set_memory_value(0xD887, 0X00)
-        if (
-            self.infinite_money
-            and self.step_count % 50 == 0
-        ):
-            self.pyboy.set_memory_value(0xD347, 0x01)
-        if self.step_count % 100 == 0:
-            self.update_10_pokeballs() # Always have 10 pokeballs    
-            self.force_learn_HMs() # Force learn HMs
+        if (self.disable_wild_encounters and self.read_m(0xD35E) in [59, 60, 61]):
+            self.set_m(0xD887, 0X00)
+
+        if self.update_freq > 0 and self.step_count > 0 and self.step_count % self.update_freq == 0:
+            self._update_reward_cache()
+            self._refresh_event_bits_cache()
+            self.append_agent_stats(action, self.reward_cache)
+            self.update_10_pokeballs()
             if self.headless == False:
-                print("Updating overlay data...")
-                prepare_overlay_data(self, location = self.get_current_location(), badges = self.get_badges_status()) # Update overlay data
+                prepare_overlay_data(self, location=self.get_current_location(), badges=self.get_badges_status())
 
-        self.last_health = self.read_hp_fraction()
-
-        self.last_power = self.get_low_power_moves()
-
+        self.last_health = cur_health
         self.update_map_progress()
-
         step_limit_reached = self.check_if_done()
-
-        obs = self._get_obs()
-
+        self._trace_step_phase("pre_obs")
+        obs = self._get_obs(cur_health)
+        self._trace_step_phase("post_obs")
         self.save_and_print_info(step_limit_reached, obs)
 
-        # create a map of all event flags set, with names where possible
-        #if step_limit_reached:
-        if self.step_count % 100 == 0:
+        if self.update_freq > 0 and self.step_count > 0 and self.step_count % self.update_freq == 0:
+            self.current_event_flags_set.clear()
             for address in range(event_flags_start, event_flags_end):
                 val = self.read_m(address)
                 for idx, bit in enumerate(f"{val:08b}"):
                     if bit == "1":
-                        # TODO this currently seems to be broken!
                         key = f"0x{address:X}-{idx}"
                         if key in self.event_names.keys():
                             self.current_event_flags_set[key] = self.event_names[key]
                         else:
-                            print(f"could not find key: {key}")
+                            # This print can be noisy, so it's commented out
+                            # print(f"could not find key: {key}")
+                            pass
 
         self.step_count += 1
-
+        self._trace_step_phase("step_end")
         return obs, new_reward, False, step_limit_reached, {}
     
     def run_action_on_emulator(self, action):
         # press button then release after some steps
         self.pyboy.send_input(self.valid_actions[action])
+        
         # disable rendering when we don't need it
-        if not self.save_video and self.headless:
-            self.pyboy._rendering(False)
         for i in range(self.act_freq):
+            if (self.trace_step_phases or self.trace_step_file) and i % self.trace_tick_every == 0:
+                self._trace_step_phase(f"emulator_tick_begin_{i}")
             # release action, so they are stateless
-            if i == 8:
+            if self.release_action_tick >= 0 and i == self.release_action_tick:
+                if self.trace_step_phases or self.trace_step_file:
+                    self._trace_step_phase("release_send_begin")
                 # release button
                 self.pyboy.send_input(self.release_actions[action])
+                if self.trace_step_phases or self.trace_step_file:
+                    self._trace_step_phase("release_send_end")
             if self.save_video and not self.fast_video:
                 self.add_video_frame()
-            if i == self.act_freq - 1:
-                # rendering must be enabled on the tick before frame is needed
-                self.pyboy._rendering(True)
             self.pyboy.tick()
+            if (self.trace_step_phases or self.trace_step_file) and i % self.trace_tick_every == 0:
+                self._trace_step_phase(f"emulator_tick_end_{i}")
+        # Safer default on Windows: release after the action tick window.
+        if self.release_action_tick < 0:
+            if self.trace_step_phases or self.trace_step_file:
+                self._trace_step_phase("release_send_begin")
+            self.pyboy.send_input(self.release_actions[action])
+            if self.trace_step_phases or self.trace_step_file:
+                self._trace_step_phase("release_send_end")
         if self.save_video and self.fast_video:
             self.add_video_frame()
 
-    def append_agent_stats(self, action):
+    def _trace_step_phase(self, phase):
+        if self.reset_count < self.trace_from_reset:
+            return
+        if self.step_count > self.trace_first_n_steps:
+            return
+        now = time.time()
+        dt_ms = 0.0
+        if self._step_trace_t0_ns:
+            dt_ms = (time.perf_counter_ns() - self._step_trace_t0_ns) / 1e6
+        line = (
+            f"[TRACE] ts={now:.3f} pid={os.getpid()} agent={self.agent_id} "
+            f"reset={self.reset_count} step={self.step_count} dt_ms={dt_ms:.3f} phase={phase}"
+        )
+        if self.trace_step_phases and self.agent_id == self.log_agent_id:
+            print(line, flush=True)
+        if self.trace_step_file and self._trace_file is not None:
+            self._trace_file.write(line + "\n")
+            self._trace_write_count += 1
+            if self.trace_flush_every <= 1 or self._trace_write_count % self.trace_flush_every == 0:
+                self._trace_file.flush()
+
+    def append_agent_stats(self, action, cached_rewards):
         x_pos, y_pos, map_n = self.get_game_coords()
         levels = [
             self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]
-        ] ## TODO: Update this to the same as level rewards
-        self.agent_stats.append(
-            {
-                "step": self.step_count,
-                "x": x_pos,
-                "y": y_pos,
-                "map": map_n,
-                "max_map_progress": self.max_map_progress,
-                "last_action": action,
-                "pcount": self.read_m(0xD163),
-                "levels": levels,
-                "levels_sum": sum(self.pokemon_levels.values()),
-                "ptypes": self.read_party(),
-                "hp": self.read_hp_fraction(),
-                "coord_count": len(self.seen_coords),
-                "deaths": self.died_count,
-                "badge": self.get_badges(),
-                "event": self.progress_reward["event"],
-                "healr": self.total_healing_rew,
-                "pokemon_seen": self.get_pokedex_seen(),
-                "pokemon_caught": self.get_pokedex_caught(),
-                "start_menu": self.start_menu_count,
-                "stats_menu": self.start_stats_count,
-                "pokemon_menu": self.start_pokemenu_count,
-                "item_menu": self.start_itemmenu_count,
-            }
-        )
+        ]
+        # MODIFIED: Instead of appending, we now just store the single, most recent dictionary.
+        # This prevents the list from growing and causing a memory leak.
+        self.agent_stats = [{
+            "step": self.step_count,
+            "x": x_pos,
+            "y": y_pos,
+            "map": map_n,
+            "max_map_progress": self.max_map_progress,
+            "last_action": action,
+            "pcount": self.read_m(0xD163),
+            "levels": levels,
+            "levels_sum": sum(self.pokemon_levels.values()),
+            "ptypes": self.read_party(),
+            "hp": self.read_hp_fraction(),
+            "coord_count": len(self.seen_coords),
+            "deaths": self.died_count,
+            "badge": self.get_badges(),
+            "event": self.progress_reward["event"],
+            "healr": self.total_healing_rew,
+            #"pokemon_seen": cached_rewards.get('pokedex_seen', 0),
+            "pokemon_caught": cached_rewards.get('pokedex_caught', 0),
+            "start_menu": self.start_menu_count,
+            "stats_menu": self.start_stats_count,
+            "pokemon_menu": self.start_pokemenu_count,
+            "item_menu": self.start_itemmenu_count,
+        }]
 
     def start_video(self):
 
@@ -438,39 +611,10 @@ class RedGymEnv(Env):
 
     def update_seen_coords(self):
         x_pos, y_pos, map_n = self.get_game_coords()
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-        self.seen_coords[coord_string] = self.step_count
-
-    def update_directional_persistence(self, action):
-        """
-        Encourages the agent to maintain movement in a consistent direction.
-        - Keeps accumulating reward if moving the same way.
-        - Slowly decreases if direction changes unnecessarily.
-        - Resets if the agent is stuck.
-        """
-        if self.in_battle():
-            return  # No directional reward in battles or menus
-
-        x_pos, y_pos, map_n = self.get_game_coords()
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-
-        # If the agent didn't move, decay the reward
-        if coord_string == self.last_coord:
-            self.directional_reward = max(self.directional_reward - 10, 0)  # Gradually reduce reward if stuck
-            return
-
-        # If moving in the same direction, keep accumulating reward
-        if action == self.last_action:
-            self.directional_reward += 0.1  # Builds up over time
-        else:
-            # If forced to turn, apply a smaller decrease instead of resetting
-            if self.is_forced_turn(coord_string):
-                self.directional_reward = max(self.directional_reward - 5, 0)
-            else:
-                self.directional_reward = max(self.directional_reward - 10, 0)  # Reduce faster if unnecessary turn
-
-        self.last_coord = coord_string
-        self.last_action = action
+        #coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        # Change self.seen_coords to use tuple keys instead of strings
+        coord_key = (x_pos, y_pos, map_n)  # Faster than string formatting
+        self.seen_coords[coord_key] = self.step_count
 
     def find_location_by_id(self, map_data, location_id):
         if "regions" in map_data and isinstance(map_data["regions"], list):
@@ -484,66 +628,170 @@ class RedGymEnv(Env):
     def get_current_location(self):
         map_x, map_y, map_n = self.get_game_coords()
         return self.find_location_by_id(self.map_data, map_n)
-
-    def get_badges_status(self):
-        return [self.read_bit(0xD356, i) for i in range(8)]
-
-    def is_forced_turn(self, coord_string):
+    
+    def get_accumulating_map_reward(self):
         """
-        Determines if the agent is forced to turn because it's at a dead end.
-        This occurs if the agent has only one viable movement option.
+        Returns accumulating reward that grows with each new map discovered.
+        Optimized: uses mathematical formula instead of loop.
+        Efficient: only reads memory when map actually changes.
         """
-        x_pos, y_pos, map_n = self.get_game_coords()
+        current_map = self.read_m(0xD35E)
+        
+        # Only process if map actually changed (avoid unnecessary work)
+        if current_map != self.last_map_checked:
+            self.last_map_checked = current_map
+            
+            # Add new map to visited set if not seen before
+            if current_map not in self.maps_visited:
+                self.maps_visited.add(current_map)
+        
+        # Mathematical formula instead of loop
+        maps_discovered = len(self.maps_visited)
+        
+        if maps_discovered <= 5:
+            # 1-5 maps: 20 each = 20 * count
+            total_reward = 20 * maps_discovered
+        elif maps_discovered <= 10:
+            # 1-5: 20 each (100 total) + 6-10: 30 each
+            total_reward = 100 + (30 * (maps_discovered - 5))
+        elif maps_discovered <= 15:
+            # 1-5: 100 + 6-10: 150 + 11-15: 50 each
+            total_reward = 250 + (50 * (maps_discovered - 10))
+        else:
+            # 1-5: 100 + 6-10: 150 + 11-15: 250 + 16+: 75 each
+            total_reward = 500 + (75 * (maps_discovered - 15))
 
-        # Check possible movement options
-        possible_moves = [
-            f"x:{x_pos+1} y:{y_pos} m:{map_n}",
-            f"x:{x_pos-1} y:{y_pos} m:{map_n}",
-            f"x:{x_pos} y:{y_pos+1} m:{map_n}",
-            f"x:{x_pos} y:{y_pos-1} m:{map_n}",
+        return total_reward
+
+    def _read_visible_tile_map(self):
+        """
+        Returns the currently visible 20x18 tile map from WRAM.
+
+        This is used by field-move shaping rewards so we can tell when the
+        agent is positioned next to a cuttable bush. If the tile map cannot be
+        read for any reason, return None and let the caller fail gracefully.
+        """
+        try:
+            _, wTileMap_addr = self.pyboy.symbol_lookup("wTileMap")
+            tile_map_bytes = self.pyboy.memory[
+                wTileMap_addr : wTileMap_addr + self.TILE_MAP_WIDTH * self.TILE_MAP_HEIGHT
+            ]
+            return np.array(tile_map_bytes, dtype=np.uint8).reshape(
+                (self.TILE_MAP_HEIGHT, self.TILE_MAP_WIDTH)
+            )
+        except Exception:
+            return None
+
+    def is_adjacent_to_cuttable_bush(self):
+        """
+        Returns True when the player is standing next to a bush/tree that can
+        be cleared with CUT in the current map context.
+
+        This is part of the CUT reward loop:
+        1. Get HM01
+        2. Teach CUT to a party member
+        3. Earn Cascade Badge so CUT is legal in the overworld
+        4. Stand next to a cuttable bush
+        5. Successfully clear the bush
+        """
+        if self.in_battle():
+            return False
+
+        tile_map = self._read_visible_tile_map()
+        if tile_map is None:
+            return False
+
+        player_screen_y, player_screen_x = 9, 9
+        map_id = self.read_m(self.ADDR_WRAM_MAP_ID)
+        is_erika_gym = map_id == self.ERIKA_GYM_MAP_ID_EXPECTED
+        expected_bush_ids = (self.BUSH_TILE_ID_GYM,) if is_erika_gym else self.BUSH_TILE_IDS_OVERWORLD
+
+        adj_checks = [
+            (player_screen_y - 1, player_screen_x),
+            (player_screen_y + 1, player_screen_x),
+            (player_screen_y, player_screen_x - 1),
+            (player_screen_y, player_screen_x + 1),
         ]
 
-        # Count how many moves are available
-        open_paths = sum(1 for move in possible_moves if move not in self.seen_coords)
+        for check_y, check_x in adj_checks:
+            if 0 <= check_y < self.TILE_MAP_HEIGHT and 0 <= check_x < self.TILE_MAP_WIDTH:
+                if tile_map[check_y, check_x] in expected_bush_ids:
+                    return True
 
-        return open_paths <= 1  # True if only one option remains
+        return False
+
+    def get_cut_progress_reward(self):
+        """
+        Reward the mandatory CUT progression loop with clear, staged bonuses.
+
+        This keeps the logic understandable for human readers and makes the
+        intended agent incentives explicit:
+        - obtain HM01 from the S.S. Anne captain
+        - have a party member that knows CUT
+        - become legally able to use CUT in the overworld
+        - navigate next to a cuttable bush
+        - successfully clear a bush with CUT
+
+        The rewards are persistent state rewards, so each stage acts like a
+        milestone that remains valuable once unlocked.
+        """
+        has_cut_hm = self.read_bit(0xD803, 0)
+        knows_cut = self.can_cut_move
+        can_use_cut = self.can_cut_badge and knows_cut
+        at_cut_bush = can_use_cut and self.is_adjacent_to_cuttable_bush()
+
+        reward = 0.0
+        if has_cut_hm:
+            reward += 5.0
+        if knows_cut:
+            reward += 10.0
+        if can_use_cut:
+            reward += 20.0
+        if at_cut_bush:
+            reward += 20.0
+
+        # `has_used_cut` increments after the CUT state machine finishes.
+        reward += 30.0 * self.has_used_cut
+        return reward
+
+    def get_badges_status(self):
+        badge_byte = self.read_m(0xD356)  # Single read
+        return [int(bit) for bit in f"{badge_byte:08b}"]
 
     def get_revisit_penalty(self):
         """
         Applies a small penalty when the agent re-enters an area too soon.
         - No penalty for first-time visits.
-        - Penalty scales based on revisit frequency.
+        - Penalty is strongest on immediate revisits and fades over time.
         - No penalty during battles.
         """
         if self.in_battle():
             return 0.0  # No penalty if the agent is in a battle
         
         x_pos, y_pos, map_n = self.get_game_coords()
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        coord_key = (x_pos, y_pos, map_n)  # Faster than string formatting
 
-        if map_n == 88 & self.read_bit(0xD7F2, 7) == 1:
+        if map_n == 88 and self.read_bit(0xD7F2, 7):
             return 0.0 # No penalty in Bill's Lab until we get the SS Anne Ticket
-        if map_n == 101 & self.read_bit(0xD803, 2) == 1:
+        if map_n == 101 and self.read_bit(0xD803, 2):
             return 0.0 # No penalty in Captain's Quarters until we get the HM01
-        if map_n == 92 & self.read_bit(0xD773, 1) == 1:
+        if map_n == 92 and self.read_bit(0xD773, 1):
             return 0.0 # No penalty in Vermillion Gym until locks are opened
 
         # Ensure we are not incorrectly penalizing first-time visits
-        if coord_string not in self.seen_coords:
+        if coord_key not in self.seen_coords:
             return 0.0  # No penalty for a truly new visit
 
         # Calculate time since last visit
-        last_seen_step = self.seen_coords[coord_string]
+        last_seen_step = self.seen_coords[coord_key]
         time_since_last_visit = self.step_count - last_seen_step
 
         if time_since_last_visit >= 500:
             return 0.0  # No penalty if enough time has passed
 
-        # Scale penalty based on how soon the agent returns
-        penalty = -0.01 * (time_since_last_visit)  # Starts at -5, reduces as more time passes
-        # Want to invert this so penalty is larger the sooner it revisits the space.
-
-        return max(penalty, -5)  # Ensure it doesn’t exceed -5
+        # Strongest penalty on quick revisits, then linearly taper to zero.
+        penalty = -5.0 * (1 - (time_since_last_visit / 500))
+        return max(penalty, -5.0)
     
     def get_immediate_revisit_penalty(self):
         """
@@ -556,112 +804,38 @@ class RedGymEnv(Env):
             return 0.0  # No penalty if the agent is in a battle
 
         x_pos, y_pos, map_n = self.get_game_coords()
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        # Change self.seen_coords to use tuple keys instead of strings
+        coord_key = (x_pos, y_pos, map_n)  # Faster than string formatting
 
         # Ensure we are not incorrectly penalizing first-time visits
-        if coord_string not in self.seen_coords:
+        if coord_key not in self.seen_coords:
             return 0.0  # No penalty for a truly new visit
 
         # Calculate time since last visit
-        last_seen_step = self.seen_coords[coord_string]
+        last_seen_step = self.seen_coords[coord_key]
         time_since_last_visit = self.step_count - last_seen_step
 
         if time_since_last_visit >= 100:
             return 0.0  # No penalty if enough time has passed
-        if map_n == 88 & self.read_bit(0xD7F2, 7) == 1:
+        if map_n == 88 and self.read_bit(0xD7F2, 7):
             return 0.0 # No penalty in Bill's Lab until we get the SS Anne Ticket
-        if map_n == 101 & self.read_bit(0xD803, 2) == 1:
+        if map_n == 101 and self.read_bit(0xD803, 2):
             return 0.0 # No penalty in Captain's Quarters until we get the HM01
-        if map_n == 92 & self.read_bit(0xD773, 1) == 1:
+        if map_n == 92 and self.read_bit(0xD773, 1):
             return 0.0 # No penalty in Vermillion Gym until locks are opened
 
         return -5.0
 
-
-    def get_frontier_bonus(self):
-        """
-        Encourages movement toward unexplored tiles.
-        - If the agent doesn't move and isn't in battle, the reward is 0.
-        - The bonus is higher for moving into areas with many unexplored neighbors.
-        """
-        if self.in_battle():
-            return self.frontier_reward  # No penalty for standing still in battle
-
-        x_pos, y_pos, map_n = self.get_game_coords()
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-
-        # If the agent didn't move, set the bonus to 0
-        if coord_string == self.last_coord:
-            return 0.0  
-
-        # Check how many neighboring tiles are unexplored
-        neighbors = [
-            f"x:{x_pos+1} y:{y_pos} m:{map_n}",
-            f"x:{x_pos-1} y:{y_pos} m:{map_n}",
-            f"x:{x_pos} y:{y_pos+1} m:{map_n}",
-            f"x:{x_pos} y:{y_pos-1} m:{map_n}",
-        ]
-
-        unexplored_neighbors = sum(1 for n in neighbors if n not in self.seen_coords)
-
-        # Reward based on number of unexplored neighbors
-        self.frontier_reward = 0.2 * unexplored_neighbors  # Slightly reduced to prevent over-rewarding
-
-    def is_on_a_new_path(self, coord_string):
-        """
-        Determines if the agent is entering a new section of the map 
-        (not just an unexplored tile but a new route).
-        """
-        return coord_string not in self.path_progress
-
     def in_battle(self):
-        #Check if player is in any type of battle
-        return (
-            self.read_m(0xD057) == 0x0F or  # Battle menu active
-            self.read_m(0xCFFB) == 0x01     # Wild battle flag
-        )
-    """
-    def update_exploration_rewards(self):
-        x, y, map_n = self.get_game_coords()
-        area_hash = self.get_local_area_hash(x, y)
-        freq_penalty = 0.0
-
-        # Convert hash to positive integer
-        positive_hash = abs(area_hash) % (10**8)  # 8-digit number
-
-        if self.in_battle():
-            freq_penalty = 1.0  # Pause exploration rewards during battles
-        elif self.read_m(0xD803) == 0 and self.read_m(0xD057) == 0 and self.read_m(0xCF13) == 0:
-        # Block rewards only in non-essential menus
-            if self.read_m(0xFF8C) == 6:
-                # Start Menu
-                if self.read_m(0xCF94) == 0:
-                    freq_penalty = 0.0
-                # Stats Menu
-                if self.read_m(0xCF94) == 1:
-                    freq_penalty = 0.0
-                # Pokemon Menu
-                if self.read_m(0xCF94) == 2:
-                    freq_penalty = 0.0
-        else:
-            # Recent path penalty calculation
-            recent_count = list(self.recent_coords).count(positive_hash)
-            freq_penalty = max(0, 1.0 - (recent_count * 0.3))  # Stronger penalty
-
-        # First visit reward
-        if positive_hash not in self.local_area_hashes:
-            self.local_area_hashes.add(positive_hash)
-            base_reward = 2.0
-        else:
-            base_reward = 0.0
+        # Check most common case first, cache result briefly
+        if hasattr(self, '_battle_cache') and self.step_count - self._battle_cache_step < 3:
+            return self._battle_cache_result
         
-        # Store in recent memory
-        self.recent_coords.append(positive_hash)
-        self.last_position = (x, y, map_n)
-        
-        # Rest of exploration calculation...        
-        return base_reward + freq_penalty
-"""
+        result = self.read_m(0xD057) == 0x0F or self.read_m(0xCFFB) == 0x01
+        self._battle_cache_result = result
+        self._battle_cache_step = self.step_count
+        return result
+   
     def get_global_coords(self):
         x_pos, y_pos, map_n = self.get_game_coords()
         return local_to_global(y_pos, x_pos, map_n)
@@ -704,36 +878,39 @@ class RedGymEnv(Env):
         self.total_reward = new_total
         return new_step
 
-    def group_rewards(self):
-        prog = self.progress_reward
-        # these values are only used by memory
-        return (
-            prog["level"] * 100 / self.reward_scale,
-            self.read_hp_fraction() * 2000,
-            prog["explore"] * 150 / (self.explore_weight * self.reward_scale),
-        )
-
     def check_if_done(self):
         done = self.step_count >= self.max_steps - 1
+        ## Renable if you want to save state on done
+        # if done: 
+        #    # Use self.s_path to save inside the session folder
+        #    with open(self.s_path / f"cut_test_state_{self.agent_id}.state", "wb") as f:
+        #        self.pyboy.save_state(f)
+        #    print("DEBUG: Saved state to cut_test_state.state")
         # done = self.read_hp_fraction() == 0 # end game on loss
         return done
 
     def save_and_print_info(self, done, obs):
-        if self.print_rewards:
+        should_print_step = (
+            self.print_rewards
+            and self.agent_id == self.log_agent_id
+            and self.print_freq > 0
+            and self.step_count % self.print_freq == 0
+        )
+        if should_print_step:
             prog_string = f"step: {self.step_count:6d}"
             for key, val in self.progress_reward.items():
                 prog_string += f" {key}: {val:5.2f}"
             prog_string += f" sum: {self.total_reward:5.2f}"
-            print(f"\r{prog_string}", end="", flush=True)
+            print(prog_string, flush=True)
 
-        if self.step_count % 50 == 0:
+        if self.save_debug_jpegs and self.update_freq > 0 and self.step_count > 0 and self.step_count % self.update_freq == 0:
             plt.imsave(
                 self.s_path / Path(f"curframe_{self.instance_id}.jpeg"),
                 self.render(reduce_res=False)[:,:, 0],
             )
 
-        if self.print_rewards and done:
-            print("", flush=True)
+        if self.print_rewards and self.agent_id == self.log_agent_id and done:
+            print("episode finished", flush=True)
             if self.save_final_state:
                 fs_path = self.s_path / Path("final_states")
                 fs_path.mkdir(exist_ok=True)
@@ -779,20 +956,28 @@ class RedGymEnv(Env):
         """
 
     def read_m(self, addr):
-        return self.pyboy.get_memory_value(addr)
+        return self.pyboy.memory[addr]
     
     def set_m(self, addr, val):
-        return self.pyboy.set_memory_value(addr, val)
+        self.pyboy.memory[addr] = val
 
     def read_bit(self, addr, bit: int) -> bool:
         # add padding so zero will read '0b100000000' instead of '0b0'
         return bin(256 + self.read_m(addr))[-bit - 1] == "1"
 
+    def _refresh_event_bits_cache(self):
+        num_badges = self.get_badges()
+        end_addr = self.event_flags_end_short if num_badges < 4 else event_flags_end
+        bytes_array = np.array(
+            [self.read_m(addr) for addr in range(event_flags_start, end_addr)],
+            dtype=np.uint8,
+        )
+        bits = np.unpackbits(bytes_array, bitorder='little').astype(np.int8)
+        self.cached_event_bits.fill(0)
+        self.cached_event_bits[:len(bits)] = bits
+
     def read_event_bits(self):
-        return [
-            int(bit) for i in range(event_flags_start, event_flags_end) 
-            for bit in f"{self.read_m(i):08b}"
-        ]
+        return self.cached_event_bits
 
     def get_levels_sum(self):
         min_poke_level = 2
@@ -909,37 +1094,9 @@ class RedGymEnv(Env):
         return self.bit_count(self.read_m(0xD356))
     
     def update_10_pokeballs(self):
-        if self.pyboy.get_memory_value(0xD31E):
-            self.pyboy.set_memory_value(0xD31F, 10)
+        if self.read_m(0xD31E):
+            self.set_m(0xD31F, 10)
     
-    def get_item_reward(self):
-        ##Checks the bag slots and awards points for items like pokeballs, potions and revives
-        self.item_reward = 0
-        bag_qty = {0xD31E: 0xD31F,
-                   0xD320: 0xD321,
-                   0xD322: 0xD323,
-                   0xD324: 0xD325,
-                   0xD326: 0xD327,
-                   0xD328: 0xD329,
-                   0xD32A: 0xD32B,
-                   0xD32C: 0xD32D,
-                   0xD32E: 0xD32F,
-                   0xD330: 0xD331,
-                   0xD332: 0xD333,
-                   0xD334: 0xD335,
-                   0xD336: 0xD337,
-                   0xD338: 0xD339,
-                   0xD33A: 0xD33B,
-                   0xD33C: 0xD33D,
-                   0xD33E: 0xD33F,
-                   0xD340: 0xD341,
-                   0xD342: 0xD343,
-                   0xD344: 0xD345}
-        ## TODO: Add storage items as well - https://datacrystal.tcrf.net/wiki/Pok%C3%A9mon_Red_and_Blue/RAM_map#Items
-        for k, v in bag_qty.items():
-            if self.read_m(k) is not None:
-                self.item_reward += min(10, self.bit_count(self.read_m(v)))
-        return self.item_reward
     
     def get_pokedex_caught(self):
         ## Checks pokedex for pokemon caught and sums that number up to add to reward
@@ -968,13 +1125,15 @@ class RedGymEnv(Env):
             self.disable_wild_encounters
             and self.read_m(0xD35E) not in self.disable_wild_encounters_maps
         ):
-            self.pyboy.set_memory_value(0xD887, 0X00)
+            self.set_m(0xD887, 0X00)
 
     def setup_enable_wild_ecounters(self):
         bank, addr = self.pyboy.symbol_lookup("TryDoWildEncounter.gotWildEncounterType")
         self.pyboy.hook_deregister(bank, addr)
     
     def check_in_menus(self):
+        if self.menu_check_complete:
+            return
         if self.read_m(0xD803) == 0 and self.read_m(0xD057) == 0 and self.read_m(0xCF13) == 0:
             if self.read_m(0xFF8C) == 6:
                 # Start Menu
@@ -989,6 +1148,10 @@ class RedGymEnv(Env):
             # Item menu
             if self.read_m(0xCF94) == 3:
                 self.start_itemmenu_count = 1
+
+        total_menus_visited = self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count
+        if total_menus_visited >= 4:
+            self.menu_check_complete = True
     
     def read_party(self):
         return [
@@ -1012,32 +1175,58 @@ class RedGymEnv(Env):
             - int(self.read_bit(museum_ticket[0], museum_ticket[1])),
             0,
         )
+    
+    def _update_reward_cache(self):
+        # Lazily initialize base_event_flags once
+        if not hasattr(self, 'base_event_flags'):
+            self.base_event_flags = sum([
+                self.bit_count(self.read_m(i))
+                for i in range(event_flags_start, event_flags_end)
+            ])
+
+        # Update rewards that change infrequently
+        #self.reward_cache['pokedex_seen'] = self.get_pokedex_seen()
+        self.reward_cache['pokedex_caught'] = self.get_pokedex_caught()
+        self.reward_cache['move_rewards'] = self.move_rewards()
+        self.reward_cache['has_HMs'] = self.has_HMs()
+        self.reward_cache['level'] = self.get_levels_reward()
+        self.reward_cache['event'] = self.update_max_event_rew() # MOVED HERE
+
+        # Also cache the raw level sum for the observation space
+        level_sum = 0.02 * sum([self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]])
+        self.reward_cache['level_encoded'] = self.fourier_encode(level_sum)
+
+        # Update cutting capability flags
+        self.can_cut_badge = self.read_bit(self.ADDR_WRAM_OBTAINED_BADGES, self.CASCADE_BADGE_BIT_INDEX)
+        self.can_cut_move = self._find_pokemon_with_cut_index() is not None
 
     def get_game_state_reward(self, print_stats=True):
-        # addresses from https://datacrystal.romhacking.net/wiki/Pok%C3%A9mon_Red/Blue:RAM_map
-        # https://github.com/pret/pokered/blob/91dc3c9f9c8fd529bb6e8307b58b96efa0bec67e/constants/event_constants.asm
+        # This function is now much faster, reading almost all values from the cache.
+        
+        # Use cached values for expensive calculations
+        #pokedex_seen = self.reward_cache.get('pokedex_seen', 0)
+        pokedex_caught = self.reward_cache.get('pokedex_caught', 0)
+        move_rewards = self.reward_cache.get('move_rewards', 0)
+        has_HMs = self.reward_cache.get('has_HMs', 0)
+        level_reward = self.reward_cache.get('level', 0)
+        event_reward = self.reward_cache.get('event', 0) # READ FROM CACHE
+
         state_scores = {
-            "event": self.reward_scale * self.update_max_event_rew() * 10, ## Increased to 10x to encourage more trainer battles
-            "level": self.reward_scale * self.get_levels_reward(),
+            "event": self.reward_scale * event_reward * 10,
+            "level": self.reward_scale * level_reward,
             "heal": self.reward_scale * self.total_healing_rew * 10,
-            #"op_lvl": self.reward_scale * self.update_max_op_level() * 0.2,
             "dead": self.reward_scale * self.died_count * -0.01,
             "badge": self.reward_scale * self.get_badges() * 100,
             "exp": self.reward_scale * self.explore_weight * len(self.seen_coords),
-            #"exp_boost": self.update_exploration_rewards(),
-            #"stuck": self.reward_scale * self.explore_weight * self.stuck_penalty,## Removing novelty for now + self.novelty_reward,
-            #"items": self.reward_scale * self.get_item_reward(), ## Removed due to AI spam buying antidotes for score TODO: Add back only for potions and pokeballs
-            "seen": self.reward_scale * self.get_pokedex_seen(),
-            "cap": self.reward_scale * self.get_pokedex_caught() * 2,
+            #"seen": self.reward_scale * pokedex_seen, # No longer rewarding for seen
+            "cap": self.reward_scale * pokedex_caught * 2,
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
-            # New Rewards
-            #"frontier": self.frontier_reward,  # Encourages exploring new paths; must be before directional_reward;; Removed for now
-            #"dir": self.directional_reward,  # Reward for maintaining movement
-            "revisit": self.get_revisit_penalty(),  # Penalizes unnecessary backtracking,
-            "ir": self.get_immediate_revisit_penalty(), #Penalizes immediate backtracking
-            "move": self.reward_scale * self.move_rewards(), ## Reward for learning stronger moves
-            "HMs": self.reward_scale * self.has_HMs(),
-            "ucut": self.reward_scale * self.has_used_cut
+            "revisit": self.get_revisit_penalty(),
+            "ir": self.get_immediate_revisit_penalty(),
+            "maps": self.reward_scale * self.get_accumulating_map_reward(),
+            "move": self.reward_scale * move_rewards,
+            "HMs": self.reward_scale * has_HMs,
+            "cut": self.reward_scale * self.get_cut_progress_reward(),
         }
 
         return state_scores
@@ -1059,8 +1248,7 @@ class RedGymEnv(Env):
         self.max_event_rew = max(cur_rew, self.max_event_rew)
         return self.max_event_rew
 
-    def update_heal_reward(self):
-        cur_health = self.read_hp_fraction()
+    def update_heal_reward(self, cur_health):
         x_pos, y_pos, map_n = self.get_game_coords()
         if self.read_m(0xD163) == self.party_size:
             # if health increased and party size did not change
@@ -1076,20 +1264,16 @@ class RedGymEnv(Env):
                         if (
                             self.disable_wild_encounters
                         ):
-                            self.pyboy.set_memory_value(0xD887, 0X0A)
+                            self.set_m(0xD887, 0X0A)
 
     def read_hp_fraction(self):
-        hp_sum = sum([
-            
-            self.read_hp(add)
-            for add in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]
-        ])
-        max_hp_sum = sum([
-            self.read_hp(add)
-            for add in [0xD18D, 0xD1B9, 0xD1E5, 0xD211, 0xD23D, 0xD269]
-        ])
-        max_hp_sum = max(max_hp_sum, 1)
-        return hp_sum / max_hp_sum
+        # Only recalculate HP every few steps (HP changes are rare outside battle)
+        if self.step_count % 5 == 0 or not hasattr(self, '_cached_hp'):
+            hp_sum = sum([self.read_hp(add) for add in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]])
+            max_hp_sum = sum([self.read_hp(add) for add in [0xD18D, 0xD1B9, 0xD1E5, 0xD211, 0xD23D, 0xD269]])
+            max_hp_sum = max(max_hp_sum, 1)
+            self._cached_hp = hp_sum / max_hp_sum
+        return self._cached_hp
 
     def read_hp(self, start):
         return 256 * self.read_m(start) + self.read_m(start + 1)
@@ -1161,215 +1345,148 @@ class RedGymEnv(Env):
                 if self.read_m(0xD250) == 45: # Replace Growl with Cut
                     self.set_m(0xD250, 15)
 
-    def _execute_cut_sequence(self, pokemon_index):
-        """
-        Executes the button presses for CUT using the Pokemon at the given index (0-5).
-        Returns True if sequence seems successful, False otherwise.
-        """
-        try:
-            # Simple fixed ticks for menus often work better
-            menu_tick_duration = 8
-            action_tick_duration = 24 # Longer pause after actions
-
-            # Open start menu
-            self.pyboy.button("START")
-            self.pyboy.tick(action_tick_duration)
-            # TODO: Add check here: Is Start Menu open? (e.g., check wMenuJoypadPoll + wCurrentMenuItem)
-
-            # Select Pokemon menu item (usually index 1)
-            # Assumes 'Pokemon' is the second item (index 1)
-            if self.read_m(self.pyboy.symbol_lookup("wCurrentMenuItem")[1]) != 0: # If not already on first item
-                 self.pyboy.button("UP") # Go to top
-                 self.pyboy.tick(menu_tick_duration)
-            self.pyboy.button("DOWN") # Go to Pokemon (item 1)
-            self.pyboy.tick(menu_tick_duration)
-            # TODO: Verify wCurrentMenuItem is now 1
-
-            self.pyboy.button("A")
-            self.pyboy.tick(action_tick_duration)
-            # TODO: Check if party screen is open (e.g., check wPartyMenuCursorBackup?)
-
-            # Select the correct Pokemon
-            # Move cursor down 'pokemon_index' times
-            for _ in range(pokemon_index):
-                 self.pyboy.button("DOWN")
-                 self.pyboy.tick(menu_tick_duration)
-            # TODO: Verify cursor is on the right Pokemon?
-
-            # Select Pokemon ('A')
-            self.pyboy.button("A")
-            self.pyboy.tick(action_tick_duration)
-            # TODO: Check if Pokemon submenu is open
-
-            # Select CUT from submenu
-            # This part is tricky - finding CUT reliably might still need looping
-            # Or assume CUT is always the first field move? (Risky)
-            # Using the wFieldMoves approach from original code:
-            found_cut = False
-            _, wFieldMoves = self.pyboy.symbol_lookup("wFieldMoves")
-            for _ in range(5): # Max 5 items: CUT, FLY, SURF, STR, FLASH
-                 current_item_index = self.read_m(self.pyboy.symbol_lookup("wCurrentMenuItem")[1])
-                 field_moves = self.pyboy.memory[wFieldMoves : wFieldMoves + 4] # Read current field moves
-                 if current_item_index < len(field_moves) and field_moves[current_item_index] == FieldMoves.CUT.value:
-                     found_cut = True
-                     break
-                 self.pyboy.button("DOWN")
-                 self.pyboy.tick(menu_tick_duration)
-
-            if not found_cut:
-                # Press B multiple times to back out safely
-                for _ in range(4):
-                    self.pyboy.button("B")
-                    self.pyboy.tick(action_tick_duration)
-                return False
-
-            # Use CUT ('A')
-            self.pyboy.button("A")
-            self.pyboy.tick(action_tick_duration * 2) # Wait longer for cut animation/text
-
-            # Need to wait for the "used Cut!" message and field effect
-            # This might require waiting until control is returned (e.g., wPlayerStandingTile != 0 then == 0 again)
-            # Or just a longer fixed delay
-            self.pyboy.tick(80) # Wait for cut animation/message box
-
-            # Press A/B to clear message box if necessary
-            self.pyboy.button("A")
-            self.pyboy.tick(action_tick_duration)
-            self.pyboy.button("B") # Just in case
-            self.pyboy.tick(action_tick_duration)
-
-            self.has_used_cut = getattr(self, 'has_used_cut', 0) + 1 # Increment counter safely
-            return True
-
-        except Exception as e:
-            # Attempt to back out of menus
-            try:
-                 for _ in range(4):
-                    self.pyboy.button("B")
-                    self.pyboy.tick(action_tick_duration)
-            except: pass # Ignore errors during bailout
-            return False
-        
     def _find_pokemon_with_cut_index(self):
         """
-        Finds the party index (0-5) of the first Pokemon with Cut.
-        Returns None if no Pokemon has Cut.
-        (This is a robust alternative to menu looping)
+        Finds the party index (0-5) of the first Pokemon that knows CUT.
+        Returns the index if found, otherwise None.
         """
-        try:
-            MOVE_CUT_ID = 0x0F # Corresponds to 15
-            # Simplified: Assumes party structure similar to update_pokemon_info
-            # Adapt based on how you can quickly read party moves
-            party_move_offsets = [0xD174, 0xD1A0, 0xD1CC, 0xD1F8, 0xD224, 0xD250] # Start of moves for each mon
-            for i in range(6):
-                species_addr = 0xD16B + i * 44 # Check species ID to see if slot is valid
-                if self.read_m(species_addr) in [0, 0xFF]: continue # Skip empty
-
-                move_addr = party_move_offsets[i]
-                moves = [self.read_m(move_addr + j) for j in range(4)]
-                if MOVE_CUT_ID in moves:
-                    return i # Return index 0-5
-            return None
-        except Exception as e:
-            return None
+        # The global move ID for CUT is 15 (0x0F)
+        for i in range(self.read_m(0xD163)): # Iterate through party size
+            # Each Pokémon's data block is 44 bytes long in WRAM
+            # Moves start at offset 8 within this block (wPartyMon1Moves, etc.)
+            moves_start_addr = 0xD16B + (i * 44) + 8
+            moves = [self.read_m(moves_start_addr + j) for j in range(4)]
+            if self.GLOBAL_MOVE_ID_CUT in moves:
+                return i
+        return None
 
     def cut_if_next(self):
-        # https://github.com/pret/pokered/blob/d38cf5281a902b4bd167a46a7c9fd9db436484a7/constants/tileset_constants.asm#L11C8-L11C11
-        # Check standing still
-        try:
-            # Checking if player has Cascade Badge, otherwise no need to check for cuttable objects
-            WRAM_OBTAINED_BADGES = 0xD356
-            CASCADE_BADGE_BIT_INDEX = 1 # Bit index for read_bit (0-7)
-            has_cascade_badge = self.read_bit(WRAM_OBTAINED_BADGES, CASCADE_BADGE_BIT_INDEX)
-            if not has_cascade_badge:
-                # print("DEBUG: Missing Cascade Badge") # Optional
-                return False
+        """
+        Optimized check for a cuttable bush. Uses cached capability flags to avoid
+        expensive memory reads on every step.
+        """
+        # --- OPTIMIZATION: Fast exit using cached flags ---
+        if not self.can_cut_badge or not self.can_cut_move or self.cut_state != CutState.IDLE:
+            return
+
+        # Check 1: Are we in a battle or a menu? (These are cheap checks)
+        in_menu = self.read_m(self.ADDR_WRAM_MENU_JOYPAD_POLL) != 0
+        if self.in_battle() or in_menu:
+            return
+
+        # Check 2: Does the Pokémon with CUT still exist? (Cheap re-check for robustness)
+        pokemon_idx = self._find_pokemon_with_cut_index()
+        if pokemon_idx is None:
+            # This can happen if the pokemon was released/deposited.
+            # The flag will be corrected in the next cache update.
+            return
+
+        # --- If all fast checks pass, proceed to the expensive tile map read ---
+        tile_map = self._read_visible_tile_map()
+        if tile_map is None:
+            return
+
+        player_screen_y, player_screen_x = 9, 9
+        map_id = self.read_m(self.ADDR_WRAM_MAP_ID)
+        is_erika_gym = (map_id == self.ERIKA_GYM_MAP_ID_EXPECTED)
+        expected_bush_ids = (self.BUSH_TILE_ID_GYM,) if is_erika_gym else self.BUSH_TILE_IDS_OVERWORLD
+
+        adj_checks = [
+            {'direction': "Up",    'y': player_screen_y - 1, 'x': player_screen_x,     'button': WindowEvent.PRESS_ARROW_UP},
+            {'direction': "Down",  'y': player_screen_y + 1, 'x': player_screen_x,     'button': WindowEvent.PRESS_ARROW_DOWN},
+            {'direction': "Left",  'y': player_screen_y,     'x': player_screen_x - 1, 'button': WindowEvent.PRESS_ARROW_LEFT},
+            {'direction': "Right", 'y': player_screen_y,     'x': player_screen_x + 1, 'button': WindowEvent.PRESS_ARROW_RIGHT},
+        ]
+
+        for check in adj_checks:
+            check_y, check_x = check['y'], check['x']
             
-            WRAM_MAP_GROUP = 0xD35E
-            WRAM_MAP_NUMBER = 0xD35F
-            WRAM_TILE_MAP = 0xD4A0
-            WRAM_PARTY_COUNT = 0xD163
-            WRAM_PARTY_MON_START = 0xD16B
-            PARTY_MON_STRUCT_SIZE = 44
-            PARTY_MON_MOVES_OFFSET = 14 # Offset from start of Pokemon struct to Move 1
-            MOVE_CUT_ID = 0x0F
-            TILE_MAP_WIDTH = 20
-            TILE_MAP_HEIGHT = 18
-            CUT_BUSH_OVERWORLD = 0x3D
-            CUT_TREE_GYM = 0x50
-            # Check map ID (USE THE CORRECT LOGIC FROM POINT 1 ABOVE)
-            current_map_number = self.read_m(WRAM_MAP_NUMBER)
-            ERIKA_GYM_ID = 134
-            OVERWORLD_CUT_MAP_IDS = set(range(0, 89))
-            is_erika_gym = (current_map_number == ERIKA_GYM_ID)
-            is_overworld = (current_map_number in OVERWORLD_CUT_MAP_IDS) # Check if current map is in the set
+            if not (0 <= check_y < self.TILE_MAP_HEIGHT and 0 <= check_x < self.TILE_MAP_WIDTH):
+                continue
+            
+            tile_id = tile_map[check_y, check_x]
 
-            if not (is_overworld or is_erika_gym):
-                return False # Exit if not on a relevant map
-            # 2. Check adjacent tiles
-            tileMap_bytes_list = []
-            start_addr = WRAM_TILE_MAP
-            num_bytes = TILE_MAP_WIDTH * TILE_MAP_HEIGHT
-            for i in range(num_bytes):
-                byte_val = self.read_m(start_addr + i)
-                tileMap_bytes_list.append(byte_val)
+            if tile_id in expected_bush_ids:
+                # All conditions met, start the state machine
+                self.cut_pokemon_party_idx = pokemon_idx
+                self.cut_direction_to_face = check['button']
+                self.cut_state = CutState.FACE_BUSH
+                return # Exit after finding the first bush
+            
+    def _tick_cut_state_machine(self):
+        """
+        Runs a single, self-contained step of the cut sequence state machine.
+        It correctly looks up release actions from self.release_actions to avoid errors.
+        """
+        current_state_before_tick = self.cut_state
 
-            # Reshape into the map
-            try:
-                tileMap = np.array(tileMap_bytes_list, dtype=np.uint8).reshape((TILE_MAP_HEIGHT, TILE_MAP_WIDTH))
-            except ValueError as e:
-                print(f"ERROR: Reshape failed. Bytes read: {len(tileMap_bytes_list)}. Error: {e}")
-                return False
-            # Player screen position (center)
-            y, x = 8, 8 # Center of the 18x20 screen buffer
-            direction_to_press = None
-            target_tile = CUT_TREE_GYM if is_erika_gym else CUT_BUSH_OVERWORLD
+        button_to_press = None
+        presses = 1
 
-            # Check UP (Tiles at y=6,7 ; x=8,9)
-            if target_tile in tileMap[y - 2 : y, x : x + 2]:
-                direction_to_press = "UP"
-            # Check DOWN (Tiles at y=10,11 ; x=8,9)
-            elif target_tile in tileMap[y + 2 : y + 4, x : x + 2]:
-                direction_to_press = "DOWN"
-            # Check LEFT (Tiles at y=8,9 ; x=6,7)
-            elif target_tile in tileMap[y : y + 2, x - 2 : x]:
-                direction_to_press = "LEFT"
-            # Check RIGHT (Tiles at y=8,9 ; x=10,11)
-            elif target_tile in tileMap[y : y + 2, x + 2 : x + 4]:
-                direction_to_press = "RIGHT"
-            if direction_to_press is None:
-                # logging.debug("No cuttable object adjacent.") # Optional debug
-                return False # No cuttable object found
-            else:
-                print("Found cut location!") # DEBUG
-                self.has_used_cut = getattr(self, 'has_used_cut', 0) + 0.01 # Increment counter safely
-            # 3. Face the object
-            self.pyboy.button(direction_to_press)
-            self.pyboy.tick(8) # Short tick to register facing direction
+        if self.cut_state == CutState.FACE_BUSH:
+            button_to_press = self.cut_direction_to_face
+            self.cut_state = CutState.OPEN_START_MENU
+        elif self.cut_state == CutState.OPEN_START_MENU:
+            button_to_press = WindowEvent.PRESS_BUTTON_START
+            self.cut_state = CutState.SELECT_POKEMON_MENU
+        elif self.cut_state == CutState.SELECT_POKEMON_MENU:
+            button_to_press = WindowEvent.PRESS_ARROW_DOWN
+            self.cut_state = CutState.OPEN_POKEMON_LIST
+        elif self.cut_state == CutState.OPEN_POKEMON_LIST:
+            button_to_press = WindowEvent.PRESS_BUTTON_A
+            self.cut_state = CutState.SELECT_POKEMON_WITH_CUT
+        elif self.cut_state == CutState.SELECT_POKEMON_WITH_CUT:
+            if self.cut_pokemon_party_idx > 0:
+                button_to_press = WindowEvent.PRESS_ARROW_DOWN
+                presses = self.cut_pokemon_party_idx
+            self.cut_state = CutState.OPEN_POKEMON_SUBMENU
+        elif self.cut_state == CutState.OPEN_POKEMON_SUBMENU:
+            button_to_press = WindowEvent.PRESS_BUTTON_A
+            self.cut_state = CutState.EXECUTE_CUT
+        elif self.cut_state == CutState.EXECUTE_CUT:
+            button_to_press = WindowEvent.PRESS_BUTTON_A
+            self.cut_state = CutState.WAIT_FOR_ANIMATION
+            self.cut_state_timer = 20
+        elif self.cut_state == CutState.WAIT_FOR_ANIMATION:
+            self.cut_state_timer -= 1
+            if self.cut_state_timer <= 0:
+                button_to_press = WindowEvent.PRESS_BUTTON_A
+                self.cut_state = CutState.CLEANUP
+        elif self.cut_state == CutState.CLEANUP:
+            self.has_used_cut += 1
+            print(f"INFO [CUT]: Sequence complete. Total cuts this session: {self.has_used_cut}")
+            self.cut_state = CutState.IDLE
+            self.cut_state_timer = 0
+            self.cut_pokemon_party_idx = 0
+            self.cut_direction_to_face = None
 
-            # 4. Find Pokemon with Cut
-            cut_pokemon_index = self._find_pokemon_with_cut_index()
-            if cut_pokemon_index is None:
-                print(f"Agent {self.agent_id}: No Pokemon with Cut found in party.") # DEBUG
-                return False # Cannot proceed
-            else:
-                self.has_used_cut = getattr(self, 'has_used_cut', 0) + 0.1 # Increment counter safely
+        # --- Action Execution ---
+        if button_to_press is not None:
+            # Find the index of the press action to get the corresponding release action
+            action_index = self.valid_actions.index(button_to_press)
+            release_action = self.release_actions[action_index]
 
-            # 5. Execute the sequence
-            success = self._execute_cut_sequence(cut_pokemon_index)
+            for _ in range(presses):
+                self.pyboy.send_input(button_to_press)
+                for i in range(self.act_freq):
+                    if i == self.act_freq // 2:
+                        self.pyboy.send_input(release_action)
+                    if self.save_video and not self.fast_video:
+                        self.add_video_frame()
+                    self.pyboy.tick()
+                if self.save_video and self.fast_video:
+                    self.add_video_frame()
+        else:
+            # If no button is pressed (e.g., waiting), just tick the emulator
+            for _ in range(self.act_freq):
+                if self.save_video and not self.fast_video:
+                    self.add_video_frame()
+                self.pyboy.tick()
+            if self.save_video and self.fast_video:
+                self.add_video_frame()
 
-            return success # Return True if sequence attempted/succeeded, False if failed
-
-        except Exception as e:
-            return e # Return False on any unexpected error
-
-    def update_pp_heal_reward(self):
-        cur_power = self.get_low_power_moves()
-        # if health increased and party size did not change
-        if cur_power > self.last_power and self.read_m(0xD163) == self.party_size:
-            if self.last_power > 0:
-                heal_pp_amount = cur_power - self.last_power
-                self.total_healing_pp_rew += heal_pp_amount
+        # if current_state_before_tick != self.cut_state:
+        #     print(f"DEBUG [CUT_FSM_TICK]: State transition: {current_state_before_tick.name} -> {self.cut_state.name}")
     
     def get_low_power_moves(self):
         self.low_power_moves = 0
@@ -1385,7 +1502,18 @@ class RedGymEnv(Env):
         return bin(bits).count("1")
     
     def fourier_encode(self, val):
-        return np.sin(val * 2 ** np.arange(self.enc_freqs))
+        # Cache expensive computation if value hasn't changed much
+        rounded_val = round(val, 2)  # Reduce precision for caching
+        if not hasattr(self, '_fourier_cache'):
+            self._fourier_cache = {}
+        
+        if rounded_val not in self._fourier_cache:
+            self._fourier_cache[rounded_val] = np.sin(val * 2 ** np.arange(self.enc_freqs))
+            # Limit cache size
+            if len(self._fourier_cache) > 100:
+                self._fourier_cache.clear()
+        
+        return self._fourier_cache[rounded_val]
     
     def update_map_progress(self):
         map_idx = self.read_m(0xD35E)
@@ -1772,3 +1900,28 @@ class RedGymEnv(Env):
             166: "Struggle"
         }
         return move_names_map[move_id]
+
+    def close(self):
+        if self._trace_file is not None:
+            try:
+                self._trace_file.flush()
+                self._trace_file.close()
+            except Exception:
+                pass
+            self._trace_file = None
+        if self.hang_dump_enabled:
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            if self._hang_dump_file is not None:
+                try:
+                    self._hang_dump_file.flush()
+                    self._hang_dump_file.close()
+                except Exception:
+                    pass
+                self._hang_dump_file = None
+        try:
+            self.pyboy.stop()
+        except Exception:
+            pass
