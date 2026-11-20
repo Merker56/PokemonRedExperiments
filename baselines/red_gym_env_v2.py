@@ -249,7 +249,7 @@ class RedGymEnv(Env):
             }
         )
 
-        head = "headless" if config["headless"] else "SDL2"
+        head = "null" if config["headless"] else "SDL2"
 
         #log_level("ERROR")
         self.pyboy = PyBoy(
@@ -258,13 +258,18 @@ class RedGymEnv(Env):
             log_level='CRITICAL',
             sound_emulated = False,
             no_input=False,
-            window_type=head
+            window=head
         )
 
         self.screen = self.pyboy.screen
 
         if not config["headless"]:
             self.pyboy.set_emulation_speed(6)
+        else:
+            # PyBoy 2.x defaults to real-time (1x) speed with a sleep-based frame
+            # limiter, even with no window. Training never wants that: turn it off
+            # explicitly so emulator speed never depends on timer/sleep behaviour.
+            self.pyboy.set_emulation_speed(0)
         # Keep a cached copy of the initial savestate for faster, consistent resets.
         with open(self.init_state, "rb") as f:
             self._init_state_bytes = f.read()

@@ -1,4 +1,4 @@
-from os.path import exists
+import argparse
 from pathlib import Path
 import uuid
 from red_gym_env_v2 import RedGymEnv
@@ -8,6 +8,15 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.callbacks import CheckpointCallback
 from tensorboard_callback import TensorboardCallback
+from heartbeat_callback import HeartbeatCallback
+
+
+def find_latest_checkpoint(runs_dir):
+    """Newest poke_model_*_steps.zip across all sessions, or None."""
+    ckpts = list(Path(runs_dir).glob("session_*/poke_model_*_steps.zip"))
+    if not ckpts:
+        return None
+    return max(ckpts, key=lambda p: p.stat().st_mtime)
 
 def make_env(rank, env_conf, seed=0):
     """
@@ -39,7 +48,20 @@ def make_env(rank, env_conf, seed=0):
     return _init
 
 if __name__ == "__main__":
-    mode_speed = True  # True: throughput mode, False: quality/streaming mode
+    parser = argparse.ArgumentParser(description="Train the Pokemon Red PPO agent")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the newest checkpoint in runs/ (the watchdog uses this after a restart)")
+    parser.add_argument("--checkpoint", default=None,
+                        help="continue from this checkpoint .zip instead of the newest one")
+    parser.add_argument("--num-envs", type=int, default=12,
+                        help="parallel game environments (12 suits a 16-thread CPU with 24 GB for WSL)")
+    parser.add_argument("--stream", action="store_true",
+                        help="quality mode: broadcast to the live map and save debug images (slower)")
+    parser.add_argument("--hours", type=float, default=0,
+                        help="stop after roughly this many hours of training (0 = run until stopped)")
+    args = parser.parse_args()
+
+    mode_speed = not args.stream  # True: throughput mode, False: quality/streaming mode
     ep_length = 1024 * 20
     
     # Define a top-level directory for all training runs
@@ -60,8 +82,16 @@ if __name__ == "__main__":
     # The TensorboardCallback handles logging rewards and summaries
     tensorboard_callback = TensorboardCallback(log_dir=sess_path, log_freq=1024)
 
+    # Heartbeat: lets the watchdog spot a stalled run and feeds the morning summary
+    heartbeat_callback = HeartbeatCallback(
+        heartbeat_path=base_output_dir / "heartbeat.jsonl",
+        session_id=sess_id,
+        every_n_calls=2048,  # roughly every 30 seconds
+        stop_after_hours=args.hours,
+    )
+
     # Combine them in a list
-    callbacks = [checkpoint_callback, tensorboard_callback]
+    callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback]
 
     base_env_config = {
         'headless': True, 'save_final_state': False, 'early_stop': False,
@@ -76,7 +106,7 @@ if __name__ == "__main__":
         'reset_state_mode': 'disk',
         'release_action_tick': -1,
         'trace_step_phases': False,
-        'trace_step_file': True,
+        'trace_step_file': False,  # heavy: writes+flushes every emulator frame; the heartbeat replaces it
         'trace_tick_every': 1,
         'trace_flush_every': 1,
         'trace_first_n_steps': 300,
@@ -88,7 +118,7 @@ if __name__ == "__main__":
     }
     if mode_speed:
         mode_overrides = {
-            'num_envs': 8,
+            'num_envs': args.num_envs,
             'print_freq': 100,
             'update_freq': 512,
             'save_debug_jpegs': False,
@@ -99,7 +129,7 @@ if __name__ == "__main__":
         }
     else:
         mode_overrides = {
-            'num_envs': 8,
+            'num_envs': args.num_envs,
             'print_freq': 50,
             'update_freq': 512,
             'save_debug_jpegs': True,
@@ -119,13 +149,19 @@ if __name__ == "__main__":
     print(f"Using {num_cpu} parallel environments")
     env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
 
-    file_name = "runs/session_1221bf4c/poke_model_6635520_steps"  # Put a checkpoint here you want to start from
+    # Fresh start by default. --resume picks up the newest checkpoint (used by the
+    # watchdog after a restart); --checkpoint picks a specific one.
+    checkpoint = None
+    if args.checkpoint:
+        checkpoint = Path(args.checkpoint)
+    elif args.resume:
+        checkpoint = find_latest_checkpoint(base_output_dir)
 
     train_steps_batch = ep_length // 20
 
-    if exists(file_name + ".zip"):
-        print("\nloading checkpoint")
-        model = PPO.load(file_name, env=env)
+    if checkpoint is not None and checkpoint.exists():
+        print(f"\nloading checkpoint {checkpoint}")
+        model = PPO.load(str(checkpoint), env=env, device="cuda")
         model.n_steps = train_steps_batch
         model.n_envs = num_cpu
         model.rollout_buffer.buffer_size = train_steps_batch
@@ -137,4 +173,11 @@ if __name__ == "__main__":
 
     print(model.policy)
 
-    model.learn(total_timesteps=(ep_length) * num_cpu * 50, callback=callbacks, tb_log_name="PPO")
+    # Effectively "until stopped": Ctrl+C, --hours, or the watchdog ends the run.
+    total_timesteps = (ep_length) * num_cpu * 10_000
+
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=callbacks, tb_log_name="PPO",
+                    reset_num_timesteps=checkpoint is None)
+    finally:
+        env.close()
