@@ -34,6 +34,14 @@ def start_label(key):
     return "the beginning"
 
 
+def cut_cell(a):
+    if a.get("trees_cut"):
+        return f"✂️ {a['trees_cut']} tree(s)"
+    if a.get("knows_cut"):
+        return f"knows Cut, tried {a.get('cut_tries', 0)}x"
+    return "-"
+
+
 def map_name(map_n):
     try:
         return MapIds(int(map_n)).name.replace("_", " ").title()
@@ -86,6 +94,9 @@ class CheckinReportCallback(BaseCallback):
                 "levels_sum": int(st.get("levels_sum", 0)),
                 "deaths": int(st.get("deaths", 0)),
                 "caught": int(st.get("pokemon_caught", 0) or 0),
+                "trees_cut": int(st.get("trees_cut", 0)),
+                "cut_tries": int(st.get("cut_tries", 0)),
+                "knows_cut": bool(st.get("knows_cut", False)),
                 "party": [
                     {"name": p[0], "level": int(p[1]), "moves": [m for m in p[2:6] if m and str(m) != "None"],
                      "hp": p[6]}
@@ -180,7 +191,7 @@ class CheckinReportCallback(BaseCallback):
             rows.append(
                 f"<tr><td>{place}</td><td>Agent {a['id']}</td><td>{'🏅' * a['badges'] or '-'}</td>"
                 f"<td>{e(a['location'])}</td><td>{a['tiles']:,}</td><td>{a['levels_sum']}</td>"
-                f"<td>{a['deaths']}</td><td>{team}</td></tr>")
+                f"<td>{a['deaths']}</td><td>{cut_cell(a)}</td><td>{team}</td></tr>")
 
         cards = []
         for a in ranked:
@@ -242,7 +253,7 @@ td,th{{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;font-size:1
  <div class='stat'><b>{s['best_levels']}</b>best team level total{change('best_levels')}</div>
 </div>
 <h2>Leaderboard</h2>
-<table><tr><th>#</th><th>Agent</th><th>Badges</th><th>Where</th><th>Tiles</th><th>Levels</th><th>Faints</th><th>Team</th></tr>
+<table><tr><th>#</th><th>Agent</th><th>Badges</th><th>Where</th><th>Tiles</th><th>Levels</th><th>Faints</th><th>Cut</th><th>Team</th></tr>
 {''.join(rows)}</table>
 {ladder_html}
 <h2>Everywhere they've walked</h2>

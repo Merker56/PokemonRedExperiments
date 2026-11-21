@@ -1,7 +1,7 @@
 # Linux / WSL2 environment for baselines/ (Python 3.11). Install with:
 #   uv pip install -r requirements-linux.txt
 # The env code uses the PyBoy 2.x API (pyboy.memory, symbol_lookup, hooks).
-pyboy==2.4.0
+pyboy==2.6.1   # 2.4 crashes loading newer saves (e.g. cut_test_state_1); 2.9 rejects Bulbasaur.state; 2.5-2.6 load both
 stable-baselines3==2.3.2
 gymnasium==0.29.1
 torch==2.5.1

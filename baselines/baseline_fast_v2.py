@@ -185,9 +185,17 @@ if __name__ == "__main__":
 
     train_steps_batch = ep_length // 20
 
+    model = None
     if checkpoint is not None and checkpoint.exists():
         print(f"\nloading checkpoint {checkpoint}")
-        model = PPO.load(str(checkpoint), env=env, device="cuda")
+        try:
+            model = PPO.load(str(checkpoint), env=env, device="cuda")
+        except Exception as e:
+            # e.g. a checkpoint from before USE CUT was added (7 actions, now 8)
+            print(f"\nCould not load {checkpoint} ({e}); starting fresh instead.")
+            model = None
+            checkpoint = None
+    if model is not None:
         model.n_steps = train_steps_batch
         model.n_envs = num_cpu
         model.rollout_buffer.buffer_size = train_steps_batch

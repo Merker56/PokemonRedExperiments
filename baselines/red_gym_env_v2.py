@@ -21,6 +21,36 @@ from pyboy.utils import WindowEvent
 from global_map import local_to_global, GLOBAL_MAP_SHAPE
 from map_lookup import MapIds
 from milestones import Archive, Ladder, MilestoneTracker
+import cut_action
+
+# ============================================================================
+# THE SCORE SHEET: what the agents get points for. Edit these together!
+# Every value is multiplied by reward_scale (2) in training.
+# "once" = paid one time per run; "each" = paid for every one.
+# ============================================================================
+REWARDS = {
+    # --- story and progress ---
+    "event":            10,    # each story event flag set (talking to Oak, beating trainers...)
+    "badge":           100,    # each gym badge
+    "milestone":        20,    # each milestone reached (Pewter, Mt. Moon, S.S. Anne... see milestones.py)
+    # --- exploring ---
+    "new_tile":       0.05,    # each new tile stepped on (also scaled by explore_weight)
+    "new_outdoor_map":  30,    # each new town or route
+    "new_indoor_map":    5,    # each new building, cave floor or room
+    "revisit":       -0.01,    # each step back onto a tile visited in the last 100 steps (a real cost now)
+    # --- Pokemon ---
+    "level":             1,    # team levels (see get_levels_reward for the curve)
+    "caught":            2,    # each Pokemon caught
+    "heal":             10,    # healing at a Pokemon Center (fraction of team HP restored)
+    "death":         -0.01,    # each time the team faints
+    "menu":           0.01,    # opening each of the 4 start-menu screens once
+    # --- Cut (all "once" except new_tree) ---
+    "cut_got_hm01":     20,    # HM01 in the bag (auto-taught to a Pokemon that can learn it)
+    "cut_first_tree":   50,    # first tree ever cut this run
+    "cut_new_tree":     10,    # each different tree cut
+}
+OUTDOOR_MAP_MAX = 0x24   # map ids 0x00-0x24 are towns and routes; everything else is indoors
+REVISIT_WINDOW = 100     # steps: coming back sooner than this costs REWARDS["revisit"]
 from tilesets import Tilesets
 from field_moves import FieldMoves
 from generate_stream_overlay import update_agent_overlay, prepare_overlay_data
@@ -94,12 +124,19 @@ class RedGymEnv(Env):
         # Milestone saves + start-state ladder (see milestones.py)
         self.milestones = None
         self.start_key = "base"
+        self.auto_teach_hms = config.get("auto_teach_hms", True)
+        self.trees_cut = set()
+        self.cut_results = {}
+        self.revisit_cost_total = 0.0
+        self.last_tile_key = None
         if config.get("archive_dir"):
             archive = Archive(config["archive_dir"], Path(self.init_state).name)
             ladder = Ladder(archive, config["rank"], config.get("n_envs", 1),
                             n_base=config.get("ladder_n_base", 4),
                             window=config.get("ladder_window", 5))
             self.milestones = MilestoneTracker(self, archive, ladder)
+        else:
+            self.milestones = MilestoneTracker(self)  # milestone rewards without the save archive
 
         self.trace_path = self.s_path / Path(f"trace_agent_{config['rank']}.log")
         self._trace_file = None
@@ -243,7 +280,10 @@ class RedGymEnv(Env):
         self.coords_pad = 12
 
         # Set these in ALL subclasses
-        self.action_space = spaces.Discrete(len(self.valid_actions))
+        # Action 7 = USE CUT (runs the Cut menu sequence; the game decides if it works)
+        self.USE_CUT = len(self.valid_actions)
+        self.n_actions = len(self.valid_actions) + 1
+        self.action_space = spaces.Discrete(self.n_actions)
         
         self.enc_freqs = 8
 
@@ -256,7 +296,7 @@ class RedGymEnv(Env):
                 "events": spaces.MultiBinary((event_flags_end - event_flags_start) * 8),
                 "map": spaces.Box(low=0, high=255, shape=(
                     self.coords_pad*4,self.coords_pad*4, 1), dtype=np.uint8),
-                "recent_actions": spaces.MultiDiscrete([len(self.valid_actions)] * self.frame_stacks),
+                "recent_actions": spaces.MultiDiscrete([len(self.valid_actions) + 1] * self.frame_stacks),
                 "recent_path": spaces.Box(low=0, high=1e8, shape=(10,), dtype=np.int32),  # Last 10 area hashes
             }
         )
@@ -392,6 +432,10 @@ class RedGymEnv(Env):
         self.cut_pokemon_party_idx = 0
         self.cut_direction_to_face = None
         self.has_used_cut = 0
+        self.trees_cut = set()
+        self.cut_results = {}
+        self.revisit_cost_total = 0.0
+        self.last_tile_key = None
         self.current_event_flags_set = {}
         self.maps_visited = set()
         self.last_map_checked = None  # Cache to avoid unnecessary reads
@@ -467,6 +511,9 @@ class RedGymEnv(Env):
             self._trace_step_phase("cut_state_tick_begin")
             self._tick_cut_state_machine()
             self._trace_step_phase("cut_state_tick_end")
+        elif action == self.USE_CUT:
+            result = cut_action.use_cut(self)
+            self.cut_results[result] = self.cut_results.get(result, 0) + 1
         else:
             self._trace_step_phase("action_tick_begin")
             self.run_action_on_emulator(action)
@@ -481,6 +528,7 @@ class RedGymEnv(Env):
 
         self.party_size = self.read_m(0xD163)
         self.check_in_menus()
+        self.update_revisit_cost()
         new_reward = self.update_reward()
         self.update_seen_coords()
         if self.milestones is not None:
@@ -610,6 +658,10 @@ class RedGymEnv(Env):
             "stats_menu": self.start_stats_count,
             "pokemon_menu": self.start_pokemenu_count,
             "item_menu": self.start_itemmenu_count,
+            "trees_cut": len(self.trees_cut),
+            "cut_tries": sum(self.cut_results.values()),
+            "knows_cut": cut_action.party_slot_with_cut(self) is not None,
+            "milestones_this_run": len(self.milestones.reached_this_run) if self.milestones is not None else 0,
         }]
 
     def start_video(self):
@@ -693,37 +745,47 @@ class RedGymEnv(Env):
     
     def get_accumulating_map_reward(self):
         """
-        Returns accumulating reward that grows with each new map discovered.
-        Optimized: uses mathematical formula instead of loop.
-        Efficient: only reads memory when map actually changes.
+        Reward for each new map this run. Towns and routes are worth more than
+        buildings: before, every house or shop was worth as much as 400+ new tiles,
+        which pulled agents indoors. (Important indoor places like gyms, Mt. Moon and
+        the S.S. Anne also count as milestones, so they still pay well.)
         """
         current_map = self.read_m(0xD35E)
-        
-        # Only process if map actually changed (avoid unnecessary work)
         if current_map != self.last_map_checked:
             self.last_map_checked = current_map
-            
-            # Add new map to visited set if not seen before
-            if current_map not in self.maps_visited:
-                self.maps_visited.add(current_map)
-        
-        # Mathematical formula instead of loop
-        maps_discovered = len(self.maps_visited)
-        
-        if maps_discovered <= 5:
-            # 1-5 maps: 20 each = 20 * count
-            total_reward = 20 * maps_discovered
-        elif maps_discovered <= 10:
-            # 1-5: 20 each (100 total) + 6-10: 30 each
-            total_reward = 100 + (30 * (maps_discovered - 5))
-        elif maps_discovered <= 15:
-            # 1-5: 100 + 6-10: 150 + 11-15: 50 each
-            total_reward = 250 + (50 * (maps_discovered - 10))
-        else:
-            # 1-5: 100 + 6-10: 150 + 11-15: 250 + 16+: 75 each
-            total_reward = 500 + (75 * (maps_discovered - 15))
+            self.maps_visited.add(current_map)
+        outdoor = sum(1 for m in self.maps_visited if m <= OUTDOOR_MAP_MAX)
+        indoor = len(self.maps_visited) - outdoor
+        return outdoor * REWARDS["new_outdoor_map"] + indoor * REWARDS["new_indoor_map"]
 
-        return total_reward
+    def update_revisit_cost(self):
+        """
+        A small one-off cost for stepping back onto a tile visited in the last
+        REVISIT_WINDOW steps. Charged once per step onto the tile (not while
+        standing still, reading text, or in menus or battles), and never refunded.
+
+        The old version was a "while standing there" score (-5 on a revisited tile,
+        0 elsewhere), so stepping off a revisited tile paid +5 back, and every
+        battle that ended on a walked tile cost -10 (penalties were switched off
+        during battles). In caves, where nearly every tile is walked, that punished
+        battles, which likely helped push agents away from Mt. Moon.
+        """
+        x_pos, y_pos, map_n = self.get_game_coords()
+        key = (x_pos, y_pos, map_n)
+        if key == self.last_tile_key or self.in_battle():
+            return
+        self.last_tile_key = key
+        last_seen = self.seen_coords.get(key)
+        if last_seen is None or self.step_count - last_seen >= REVISIT_WINDOW:
+            return
+        # Places where going back and forth is the point
+        if map_n == 88 and self.read_bit(0xD7F2, 7):
+            return  # Bill's house
+        if map_n == 101 and self.read_bit(0xD803, 2):
+            return  # Captain's quarters
+        if map_n == 92 and self.read_bit(0xD773, 1):
+            return  # Vermilion Gym trash-can puzzle
+        self.revisit_cost_total += REWARDS["revisit"]
 
     def _read_visible_tile_map(self):
         """
@@ -784,36 +846,20 @@ class RedGymEnv(Env):
 
     def get_cut_progress_reward(self):
         """
-        Reward the mandatory CUT progression loop with clear, staged bonuses.
+        One-time rewards for the Cut chain (values in REWARDS at the top of this file).
 
-        This keeps the logic understandable for human readers and makes the
-        intended agent incentives explicit:
-        - obtain HM01 from the S.S. Anne captain
-        - have a party member that knows CUT
-        - become legally able to use CUT in the overworld
-        - navigate next to a cuttable bush
-        - successfully clear a bush with CUT
-
-        The rewards are persistent state rewards, so each stage acts like a
-        milestone that remains valuable once unlocked.
+        These used to be "while true" rewards (e.g. +20 while standing next to a
+        tree). Because the agent is paid the *change* in score each step, that meant
+        +20 for walking up to a tree and -20 for walking away, which taught it to
+        park next to trees. Everything here only ever goes up.
         """
-        has_cut_hm = self.read_bit(0xD803, 0)
-        knows_cut = self.can_cut_move
-        can_use_cut = self.can_cut_badge and knows_cut
-        at_cut_bush = can_use_cut and self.is_adjacent_to_cuttable_bush()
-
+        R = REWARDS
         reward = 0.0
-        if has_cut_hm:
-            reward += 5.0
-        if knows_cut:
-            reward += 10.0
-        if can_use_cut:
-            reward += 20.0
-        if at_cut_bush:
-            reward += 20.0
-
-        # `has_used_cut` increments after the CUT state machine finishes.
-        reward += 30.0 * self.has_used_cut
+        if cut_action.has_hm01(self):
+            reward += R["cut_got_hm01"]
+        if self.trees_cut:
+            reward += R["cut_first_tree"]
+        reward += R["cut_new_tree"] * len(self.trees_cut)
         return reward
 
     def get_badges_status(self):
@@ -1258,6 +1304,10 @@ class RedGymEnv(Env):
         level_sum = 0.02 * sum([self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]])
         self.reward_cache['level_encoded'] = self.fourier_encode(level_sum)
 
+        # Bookkeeping: teach Cut once HM01 is in the bag (the agent still has to use it)
+        if self.auto_teach_hms:
+            cut_action.auto_teach_cut(self)
+
         # Update cutting capability flags
         self.can_cut_badge = self.read_bit(self.ADDR_WRAM_OBTAINED_BADGES, self.CASCADE_BADGE_BIT_INDEX)
         self.can_cut_move = self._find_pokemon_with_cut_index() is not None
@@ -1273,22 +1323,23 @@ class RedGymEnv(Env):
         level_reward = self.reward_cache.get('level', 0)
         event_reward = self.reward_cache.get('event', 0) # READ FROM CACHE
 
+        R, k = REWARDS, self.reward_scale
+        milestones_reached = len(self.milestones.reached_this_run) if self.milestones is not None else 0
         state_scores = {
-            "event": self.reward_scale * event_reward * 10,
-            "level": self.reward_scale * level_reward,
-            "heal": self.reward_scale * self.total_healing_rew * 10,
-            "dead": self.reward_scale * self.died_count * -0.01,
-            "badge": self.reward_scale * self.get_badges() * 100,
-            "exp": self.reward_scale * self.explore_weight * len(self.seen_coords),
-            #"seen": self.reward_scale * pokedex_seen, # No longer rewarding for seen
-            "cap": self.reward_scale * pokedex_caught * 2,
-            "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * 0.01,
-            "revisit": self.get_revisit_penalty(),
-            "ir": self.get_immediate_revisit_penalty(),
-            "maps": self.reward_scale * self.get_accumulating_map_reward(),
-            "move": self.reward_scale * move_rewards,
-            "HMs": self.reward_scale * has_HMs,
-            "cut": self.reward_scale * self.get_cut_progress_reward(),
+            "event": k * event_reward * R["event"],
+            "level": k * level_reward * R["level"],
+            "heal": k * self.total_healing_rew * R["heal"],
+            "dead": k * self.died_count * R["death"],
+            "badge": k * self.get_badges() * R["badge"],
+            "milestone": k * milestones_reached * R["milestone"],
+            "exp": k * len(self.seen_coords) * R["new_tile"],
+            "cap": k * pokedex_caught * R["caught"],
+            "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * R["menu"],
+            "revisit": k * self.revisit_cost_total,
+            "maps": k * self.get_accumulating_map_reward(),
+            "move": k * move_rewards,
+            "HMs": k * has_HMs,
+            "cut": k * self.get_cut_progress_reward(),
         }
 
         return state_scores
@@ -1374,7 +1425,7 @@ class RedGymEnv(Env):
         # Check if any move slot contains Cut (either as value 15 or string "CUT")
         for address in move_addresses:
             move_value = self.read_m(address)
-            if move_value in [15, 19, 57, 70]:
+            if move_value in [19, 57, 70]:  # Fly, Surf, Strength (Cut has its own rewards now)
                 move_reward += 100
             elif move_value in [63, 56, 72, 83, 87, 89, 90, 94, 136, 143]:
                 move_reward += 1

@@ -41,9 +41,14 @@ IS_IN_BATTLE = 0xD057       # 0 = not in battle
 ITEM_OAKS_PARCEL = 0x46
 ITEM_SS_TICKET = 0x3F
 ITEM_HM01 = 0xC4
+ITEM_SILPH_SCOPE = 0x48
+ITEM_POKE_FLUTE = 0x49
+ITEM_HM03_SURF = 0xC6
+ITEM_HM04_STRENGTH = 0xC7
 
 MT_MOON_MAPS = {0x3B, 0x3C, 0x3D}
 SS_ANNE_MAPS = set(range(0x5F, 0x69))
+ROCK_TUNNEL_MAPS = {0x52, 0xE8}
 
 
 def bag_has(env, item_id):
@@ -82,6 +87,27 @@ MILESTONES = [
     ("13_hm01",          "Got HM01 (Cut)",               lambda e: bag_has(e, ITEM_HM01) or e.read_bit(0xD803, 0)),
     ("14_vermilion_gym", "Cut the tree: in Vermilion Gym", lambda e: on_map(e, 0x5C)),
     ("15_thunder_badge", "Thunder Badge",                lambda e: badge(e, 2)),
+    # --- the rest of the game (not every route has to go in this exact order) ---
+    ("16_rock_tunnel",   "Entered Rock Tunnel",          lambda e: e.read_m(CUR_MAP) in ROCK_TUNNEL_MAPS),
+    ("17_lavender",      "Reached Lavender Town",        lambda e: on_map(e, 0x04)),
+    ("18_celadon",       "Reached Celadon City",         lambda e: on_map(e, 0x06)),
+    ("19_rainbow_badge", "Rainbow Badge",                lambda e: badge(e, 3)),
+    ("20_silph_scope",   "Got the Silph Scope",          lambda e: bag_has(e, ITEM_SILPH_SCOPE)),
+    ("21_poke_flute",    "Got the Poké Flute",           lambda e: bag_has(e, ITEM_POKE_FLUTE)),
+    ("22_fuchsia",       "Reached Fuchsia City",         lambda e: on_map(e, 0x07)),
+    ("23_soul_badge",    "Soul Badge",                   lambda e: badge(e, 4)),
+    ("24_hm03_surf",     "Got HM03 (Surf)",              lambda e: bag_has(e, ITEM_HM03_SURF)),
+    ("25_hm04_strength", "Got HM04 (Strength)",          lambda e: bag_has(e, ITEM_HM04_STRENGTH)),
+    ("26_saffron",       "Reached Saffron City",         lambda e: on_map(e, 0x0A)),
+    ("27_marsh_badge",   "Marsh Badge",                  lambda e: badge(e, 5)),
+    ("28_cinnabar",      "Reached Cinnabar Island",      lambda e: on_map(e, 0x08)),
+    ("29_volcano_badge", "Volcano Badge",                lambda e: badge(e, 6)),
+    ("30_earth_badge",   "Earth Badge",                  lambda e: badge(e, 7)),
+    ("31_victory_road",  "Entered Victory Road",         lambda e: on_map(e, 0x6C)),
+    ("32_indigo",        "Reached Indigo Plateau",       lambda e: on_map(e, 0x09)),
+    ("33_elite_four",    "Facing the Elite Four",        lambda e: on_map(e, 0xF5)),
+    ("34_champion",      "Reached the Champion",         lambda e: on_map(e, 0x78)),
+    ("35_hall_of_fame",  "Hall of Fame!",                lambda e: on_map(e, 0x76)),
 ]
 LABELS = {k: label for k, label, _ in MILESTONES}
 
@@ -196,7 +222,7 @@ class MilestoneTracker:
     CHECK_EVERY = 8          # steps between checks (cheap memory reads)
     QUALITY_PATIENCE = 400   # steps to wait for a "good moment" before giving up
 
-    def __init__(self, env, archive, ladder, min_hp_fraction=0.5):
+    def __init__(self, env, archive=None, ladder=None, min_hp_fraction=0.5):
         self.env = env
         self.archive = archive
         self.ladder = ladder
@@ -205,8 +231,12 @@ class MilestoneTracker:
         self.start_key = "base"
         self.done = set()
         self.pending = {}        # milestone index -> step first seen
+        self.reached_this_run = set()  # for the one-time milestone reward
 
     def choose_start(self):
+        if self.ladder is None:
+            self.offset, self.start_key = 0, "base"
+            return None
         meta, key = self.ladder.next_start()
         self.offset = meta["total_steps"] if meta else 0
         self.start_key = key
@@ -222,6 +252,7 @@ class MilestoneTracker:
         self.done = {i for i, (_, _, check) in enumerate(MILESTONES)
                      if i <= start_idx or self._safe(check)}
         self.pending = {}
+        self.reached_this_run = set()
 
     def _safe(self, check):
         try:
@@ -249,6 +280,7 @@ class MilestoneTracker:
                 if not self._safe(check):
                     continue
                 self.pending[i] = e.step_count
+                self.reached_this_run.add(i)
             # Reached: save at the first good moment (out of battle, healthy enough)
             if self.good_moment():
                 self._save(i, key, label)
@@ -260,6 +292,8 @@ class MilestoneTracker:
 
     def _save(self, i, key, label):
         e = self.env
+        if self.archive is None:
+            return
         buf = io.BytesIO()
         e.pyboy.save_state(buf)
         meta = {
