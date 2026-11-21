@@ -29,28 +29,23 @@ import cut_action
 # "once" = paid one time per run; "each" = paid for every one.
 # ============================================================================
 REWARDS = {
-    # --- story and progress ---
-    "event":            10,    # each story event flag set (talking to Oak, beating trainers...)
-    "badge":           100,    # each gym badge
-    "milestone":        20,    # each milestone reached (Pewter, Mt. Moon, S.S. Anne... see milestones.py)
-    # --- exploring ---
-    "new_tile":       0.05,    # each new tile stepped on (also scaled by explore_weight)
-    "new_outdoor_map":  30,    # each new town or route
-    "new_indoor_map":    5,    # each new building, cave floor or room
-    "revisit":       -0.01,    # each step back onto a tile visited in the last 100 steps (a real cost now)
-    # --- Pokemon ---
-    "level":             1,    # team levels (see get_levels_reward for the curve)
+    # --- April 2026 values (the setup that beat Brock by ~20M steps) ---
+    "event":            10,    # each story event flag set
+    "badge":           100,    # each gym badge: deliberately outsized
+    "new_tile":       0.05,    # each new tile (same as explore_weight 0.05)
+    # maps: escalating curve in get_accumulating_map_reward (20/30/50/75 per new map)
+    # revisit: April's get_revisit_penalty + get_immediate_revisit_penalty
+    "level":             1,    # team levels (see get_levels_reward)
     "caught":            2,    # each Pokemon caught
-    "heal":             10,    # healing at a Pokemon Center (fraction of team HP restored)
+    "heal":             10,    # healing at a Pokemon Center
     "death":         -0.01,    # each time the team faints
-    "menu":           0.01,    # opening each of the 4 start-menu screens once
-    # --- Cut (all "once" except new_tree) ---
-    "cut_got_hm01":     20,    # HM01 in the bag (auto-taught to a Pokemon that can learn it)
-    "cut_first_tree":   50,    # first tree ever cut this run
+    "menu":           0.01,    # opening each start-menu screen once
+    # --- added since April ---
+    "milestone":         0,    # per milestone reached (off: April's events/badges already cover it)
+    "cut_got_hm01":     20,    # HM01 in the bag (once)
+    "cut_first_tree":   50,    # first tree cut (once)
     "cut_new_tree":     10,    # each different tree cut
 }
-OUTDOOR_MAP_MAX = 0x24   # map ids 0x00-0x24 are towns and routes; everything else is indoors
-REVISIT_WINDOW = 100     # steps: coming back sooner than this costs REWARDS["revisit"]
 from tilesets import Tilesets
 from field_moves import FieldMoves
 from generate_stream_overlay import update_agent_overlay, prepare_overlay_data
@@ -596,7 +591,6 @@ class RedGymEnv(Env):
 
         self.party_size = self.read_m(0xD163)
         self.check_in_menus()
-        self.update_revisit_cost()
         new_reward = self.update_reward()
         self.update_seen_coords()
         if self.milestones is not None:
@@ -824,47 +818,37 @@ class RedGymEnv(Env):
     
     def get_accumulating_map_reward(self):
         """
-        Reward for each new map this run. Towns and routes are worth more than
-        buildings: before, every house or shop was worth as much as 400+ new tiles,
-        which pulled agents indoors. (Important indoor places like gyms, Mt. Moon and
-        the S.S. Anne also count as milestones, so they still pay well.)
+        Returns accumulating reward that grows with each new map discovered.
+        Optimized: uses mathematical formula instead of loop.
+        Efficient: only reads memory when map actually changes.
         """
         current_map = self.read_m(0xD35E)
+        
+        # Only process if map actually changed (avoid unnecessary work)
         if current_map != self.last_map_checked:
             self.last_map_checked = current_map
-            self.maps_visited.add(current_map)
-        outdoor = sum(1 for m in self.maps_visited if m <= OUTDOOR_MAP_MAX)
-        indoor = len(self.maps_visited) - outdoor
-        return outdoor * REWARDS["new_outdoor_map"] + indoor * REWARDS["new_indoor_map"]
+            
+            # Add new map to visited set if not seen before
+            if current_map not in self.maps_visited:
+                self.maps_visited.add(current_map)
+        
+        # Mathematical formula instead of loop
+        maps_discovered = len(self.maps_visited)
+        
+        if maps_discovered <= 5:
+            # 1-5 maps: 20 each = 20 * count
+            total_reward = 20 * maps_discovered
+        elif maps_discovered <= 10:
+            # 1-5: 20 each (100 total) + 6-10: 30 each
+            total_reward = 100 + (30 * (maps_discovered - 5))
+        elif maps_discovered <= 15:
+            # 1-5: 100 + 6-10: 150 + 11-15: 50 each
+            total_reward = 250 + (50 * (maps_discovered - 10))
+        else:
+            # 1-5: 100 + 6-10: 150 + 11-15: 250 + 16+: 75 each
+            total_reward = 500 + (75 * (maps_discovered - 15))
 
-    def update_revisit_cost(self):
-        """
-        A small one-off cost for stepping back onto a tile visited in the last
-        REVISIT_WINDOW steps. Charged once per step onto the tile (not while
-        standing still, reading text, or in menus or battles), and never refunded.
-
-        The old version was a "while standing there" score (-5 on a revisited tile,
-        0 elsewhere), so stepping off a revisited tile paid +5 back, and every
-        battle that ended on a walked tile cost -10 (penalties were switched off
-        during battles). In caves, where nearly every tile is walked, that punished
-        battles, which likely helped push agents away from Mt. Moon.
-        """
-        x_pos, y_pos, map_n = self.get_game_coords()
-        key = (x_pos, y_pos, map_n)
-        if key == self.last_tile_key or self.in_battle():
-            return
-        self.last_tile_key = key
-        last_seen = self.seen_coords.get(key)
-        if last_seen is None or self.step_count - last_seen >= REVISIT_WINDOW:
-            return
-        # Places where going back and forth is the point
-        if map_n == 88 and self.read_bit(0xD7F2, 7):
-            return  # Bill's house
-        if map_n == 101 and self.read_bit(0xD803, 2):
-            return  # Captain's quarters
-        if map_n == 92 and self.read_bit(0xD773, 1):
-            return  # Vermilion Gym trash-can puzzle
-        self.revisit_cost_total += REWARDS["revisit"]
+        return total_reward
 
     def _read_visible_tile_map(self):
         """
@@ -1419,7 +1403,8 @@ class RedGymEnv(Env):
             "exp": k * len(self.seen_coords) * R["new_tile"],
             "cap": k * pokedex_caught * R["caught"],
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * R["menu"],
-            "revisit": k * self.revisit_cost_total,
+            "revisit": self.get_revisit_penalty(),            # April's shaping (state-based)
+            "ir": self.get_immediate_revisit_penalty(),
             "maps": k * self.get_accumulating_map_reward(),
             "move": k * move_rewards,
             "HMs": k * has_HMs,
