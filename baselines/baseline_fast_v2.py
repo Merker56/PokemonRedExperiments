@@ -155,6 +155,11 @@ if __name__ == "__main__":
     )
 
     # Combine them in a list
+    # If training itself stops moving for 3 minutes, write where the main process is
+    # to runs/stalls/main.txt. The timer is pushed back on every training step (see
+    # MainStallWatch), so it only fires when the trainer has genuinely stopped.
+    (base_output_dir / "stalls").mkdir(parents=True, exist_ok=True)
+    main_stall_watch = MainStallWatch(base_output_dir / "stalls" / "main.txt")
     callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback, checkin_callback, main_stall_watch]
 
     base_env_config = {
@@ -228,11 +233,6 @@ if __name__ == "__main__":
     # isn't initialised until the model is created below.
     env = GuardedSubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)], start_method="fork")
 
-    # If training itself stops moving for 3 minutes, write where the main process is
-    # to runs/stalls/main.txt. The timer is pushed back on every training step (see
-    # MainStallWatch), so it only fires when the trainer has genuinely stopped.
-    (base_output_dir / "stalls").mkdir(parents=True, exist_ok=True)
-    main_stall_watch = MainStallWatch(base_output_dir / "stalls" / "main.txt")
 
     # The main process only needs a few CPU threads (the GPU does the training);
     # leaving PyTorch's default (one per CPU thread) makes it fight the emulators.
