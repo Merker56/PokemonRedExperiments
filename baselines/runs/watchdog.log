@@ -22,3 +22,21 @@
 2026-11-20 21:05:21  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --map-sprite 0
 2026-11-20 21:07:25  Ctrl+C received, stopping training
 2026-11-20 21:07:26  === stopped by user ===
+2026-11-20 21:07:47  === overnight run starting (hours=until stopped, envs=32, stream=False, resume=True) ===
+2026-11-20 21:07:47  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 21:22:32  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 21:22:53  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 21:38:07  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 21:38:28  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 21:53:48  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 21:54:08  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 22:09:11  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 22:09:32  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 22:33:21  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 22:33:41  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 22:57:38  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 22:57:59  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 23:12:33  RESTART: no heartbeat for 10 min (stalled)
+2026-11-20 23:12:53  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --base-agents 10 --map --resume
+2026-11-20 23:43:09  Ctrl+C received, stopping training
+2026-11-20 23:43:10  === stopped by user ===
