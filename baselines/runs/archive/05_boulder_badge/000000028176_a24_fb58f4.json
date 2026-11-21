@@ -1,0 +1,17 @@
+{
+ "milestone": "05_boulder_badge",
+ "label": "Boulder Badge",
+ "total_steps": 28176,
+ "run_steps": 9240,
+ "started_from": "04_pewter",
+ "agent": 24,
+ "hp_fraction": 0.54,
+ "levels": [
+  13,
+  4,
+  3
+ ],
+ "badges": 1,
+ "base_state": "Bulbasaur.state",
+ "time": "2026-11-21 11:06:22"
+}

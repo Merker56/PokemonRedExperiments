@@ -1,0 +1,1187 @@
+{
+ "time": "2026-11-21 11:01",
+ "session": "716a1ce3",
+ "timesteps": 94597120,
+ "best_badges": 0,
+ "best_location": "Route 22",
+ "best_tiles": 1036,
+ "best_levels": 23,
+ "agents": [
+  {
+   "id": 0,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest",
+   "tiles": 1036,
+   "levels_sum": 9,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 916,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "19/23"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "9/14"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 1,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 894,
+   "levels_sum": 9,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 900,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "0/23"
+    },
+    {
+     "name": "Pidgey",
+     "level": 3,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "1/16"
+    },
+    {
+     "name": "Pidgey",
+     "level": 3,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "10/15"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 2,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Mart",
+   "tiles": 752,
+   "levels_sum": 20,
+   "deaths": 0,
+   "caught": 5,
+   "trees_cut": 0,
+   "cut_tries": 908,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "0/23"
+    },
+    {
+     "name": "Pidgey",
+     "level": 3,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "11/16"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "17/17"
+    },
+    {
+     "name": "Caterpie",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "String Shot"
+     ],
+     "hp": "16/16"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "18/18"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 3,
+   "badges": 0,
+   "map_progress": 4,
+   "location": "Pallet Town",
+   "tiles": 914,
+   "levels_sum": 6,
+   "deaths": 1,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 947,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "23/23"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 4,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 1007,
+   "levels_sum": 9,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 940,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "14/23"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "15/15"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "9/14"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 5,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Mart",
+   "tiles": 788,
+   "levels_sum": 9,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 968,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "18/23"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "10/15"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 6,
+   "badges": 0,
+   "map_progress": 4,
+   "location": "Route 2",
+   "tiles": 805,
+   "levels_sum": 6,
+   "deaths": 0,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 959,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "23/23"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 7,
+   "badges": 0,
+   "map_progress": 4,
+   "location": "Viridian City",
+   "tiles": 919,
+   "levels_sum": 9,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 961,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "23/23"
+    },
+    {
+     "name": "Pidgey",
+     "level": 3,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "7/15"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 8,
+   "badges": 0,
+   "map_progress": 4,
+   "location": "Route 22",
+   "tiles": 846,
+   "levels_sum": 6,
+   "deaths": 0,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 913,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "5/23"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 9,
+   "badges": 0,
+   "map_progress": 4,
+   "location": "Viridian City",
+   "tiles": 843,
+   "levels_sum": 9,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 1017,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "14/23"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "14/14"
+    }
+   ],
+   "started_from": "base"
+  },
+  {
+   "id": 10,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Viridian City",
+   "tiles": 726,
+   "levels_sum": 13,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 772,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "30/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 11,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest",
+   "tiles": 650,
+   "levels_sum": 11,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 921,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "4/23"
+    },
+    {
+     "name": "Weedle",
+     "level": 5,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "0/19"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 12,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 964,
+   "levels_sum": 6,
+   "deaths": 0,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 1068,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "23/23"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 13,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 597,
+   "levels_sum": 11,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 904,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "15/23"
+    },
+    {
+     "name": "Weedle",
+     "level": 5,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "19/20"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "17/17"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 14,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 833,
+   "levels_sum": 6,
+   "deaths": 0,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 1005,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "23/23"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 15,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 717,
+   "levels_sum": 9,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 860,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "14/23"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "9/15"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 16,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Mart",
+   "tiles": 733,
+   "levels_sum": 6,
+   "deaths": 0,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 929,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "17/23"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 17,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest South Gate",
+   "tiles": 432,
+   "levels_sum": 12,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 733,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 8,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "18/27"
+    },
+    {
+     "name": "Pidgey",
+     "level": 4,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "10/17"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 18,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest",
+   "tiles": 871,
+   "levels_sum": 13,
+   "deaths": 0,
+   "caught": 3,
+   "trees_cut": 0,
+   "cut_tries": 902,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 6,
+     "moves": [
+      "Tackle",
+      "Growl"
+     ],
+     "hp": "12/23"
+    },
+    {
+     "name": "Pidgey",
+     "level": 4,
+     "moves": [
+      "Gust"
+     ],
+     "hp": "13/18"
+    },
+    {
+     "name": "Weedle",
+     "level": 3,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 19,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest",
+   "tiles": 265,
+   "levels_sum": 14,
+   "deaths": 0,
+   "caught": 3,
+   "trees_cut": 0,
+   "cut_tries": 785,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 8,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "8/27"
+    },
+    {
+     "name": "Pikachu",
+     "level": 3,
+     "moves": [
+      "Thunder Shock",
+      "Growl"
+     ],
+     "hp": "15/15"
+    },
+    {
+     "name": "Weedle",
+     "level": 3,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "8/15"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 20,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian Forest South Gate",
+   "tiles": 503,
+   "levels_sum": 16,
+   "deaths": 1,
+   "caught": 3,
+   "trees_cut": 0,
+   "cut_tries": 775,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 7,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "21/25"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "13/15"
+    },
+    {
+     "name": "Kakuna",
+     "level": 6,
+     "moves": [
+      "Harden"
+     ],
+     "hp": "20/21"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  },
+  {
+   "id": 21,
+   "badges": 0,
+   "map_progress": 6,
+   "location": "Museum 2F",
+   "tiles": 207,
+   "levels_sum": 15,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 842,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 11,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "25/34"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "17/17"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 22,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Viridian Pokecenter",
+   "tiles": 863,
+   "levels_sum": 13,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 944,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "28/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 23,
+   "badges": 0,
+   "map_progress": 6,
+   "location": "Museum 1F",
+   "tiles": 183,
+   "levels_sum": 15,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 803,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 11,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "34/34"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "12/17"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 24,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Viridian City",
+   "tiles": 944,
+   "levels_sum": 13,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 909,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "28/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 25,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Viridian City",
+   "tiles": 692,
+   "levels_sum": 23,
+   "deaths": 1,
+   "caught": 4,
+   "trees_cut": 0,
+   "cut_tries": 866,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 11,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "28/34"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "12/17"
+    },
+    {
+     "name": "Rattata",
+     "level": 3,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "13/14"
+    },
+    {
+     "name": "Pidgey",
+     "level": 5,
+     "moves": [
+      "Gust",
+      "Sand Attack"
+     ],
+     "hp": "19/19"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 26,
+   "badges": 0,
+   "map_progress": 6,
+   "location": "Museum 1F",
+   "tiles": 361,
+   "levels_sum": 13,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 869,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "9/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 27,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Pewter Gym",
+   "tiles": 442,
+   "levels_sum": 15,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 906,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 11,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "18/34"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "17/17"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 28,
+   "badges": 0,
+   "map_progress": 6,
+   "location": "Museum 2F",
+   "tiles": 425,
+   "levels_sum": 13,
+   "deaths": 0,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 798,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "9/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 29,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Viridian Forest",
+   "tiles": 696,
+   "levels_sum": 15,
+   "deaths": 1,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 877,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 11,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "34/34"
+    },
+    {
+     "name": "Weedle",
+     "level": 4,
+     "moves": [
+      "Poison Sting",
+      "String Shot"
+     ],
+     "hp": "12/17"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 30,
+   "badges": 0,
+   "map_progress": 7,
+   "location": "Route 22",
+   "tiles": 1032,
+   "levels_sum": 13,
+   "deaths": 2,
+   "caught": 2,
+   "trees_cut": 0,
+   "cut_tries": 893,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 9,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "20/30"
+    },
+    {
+     "name": "Rattata",
+     "level": 4,
+     "moves": [
+      "Tackle",
+      "Tail Whip"
+     ],
+     "hp": "16/16"
+    }
+   ],
+   "started_from": "04_pewter"
+  },
+  {
+   "id": 31,
+   "badges": 0,
+   "map_progress": 5,
+   "location": "Viridian City",
+   "tiles": 903,
+   "levels_sum": 7,
+   "deaths": 1,
+   "caught": 1,
+   "trees_cut": 0,
+   "cut_tries": 886,
+   "knows_cut": false,
+   "party": [
+    {
+     "name": "Bulbasaur",
+     "level": 7,
+     "moves": [
+      "Tackle",
+      "Growl",
+      "Leech Seed"
+     ],
+     "hp": "25/25"
+    }
+   ],
+   "started_from": "03_viridian_forest"
+  }
+ ],
+ "ladder": [
+  {
+   "key": "03_viridian_forest",
+   "label": "Entered Viridian Forest",
+   "best_steps": 624,
+   "best_agent": 9,
+   "best_time": "2026-11-21 09:34:15",
+   "saves": 5,
+   "starting_here": [
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    31
+   ]
+  },
+  {
+   "key": "04_pewter",
+   "label": "Reached Pewter City",
+   "best_steps": 16912,
+   "best_agent": 5,
+   "best_time": "2026-11-21 10:25:26",
+   "saves": 2,
+   "starting_here": [
+    10,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30
+   ]
+  }
+ ]
+}

@@ -82,11 +82,14 @@ class HeartbeatCallback(BaseCallback):
 
         badges = col("badge")
         progress = col("max_map_progress")
+        milestone = col("milestone")
         coords = col("coord_count")
         levels = col("levels_sum")
         return {
             "badges_max": int(badges.max()),
             "badges_mean": round(float(badges.mean()), 2),
+            "milestone_max": int(milestone.max()),          # 1-based index into milestones.MILESTONES
+            "milestone_mean": round(float(milestone.mean()), 1),
             "map_progress_max": int(progress.max()),
             "map_progress_mean": round(float(progress.mean()), 1),
             "coords_max": int(coords.max()),

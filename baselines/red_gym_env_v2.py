@@ -316,6 +316,33 @@ class RedGymEnv(Env):
 
         self.screen = self.pyboy.screen
 
+        # Two start-menu options can stall PyBoy for minutes per frame: saving the
+        # game and the Pokedex screen. (This was the April overnight "hang", and the
+        # stall at episode end.) Training needs neither, so we patch the game in
+        # memory: SAVE does nothing, and POKEDEX goes straight back to the menu.
+        if config.get("block_stall_menus", True):
+            try:
+                bank, addr = self.pyboy.symbol_lookup("SaveSAV")
+                self.pyboy.memory[bank, addr] = 0xC9                      # ret
+                bank, addr = self.pyboy.symbol_lookup("StartMenu_Pokedex")
+                _, back = self.pyboy.symbol_lookup("RedisplayStartMenu")
+                self.pyboy.memory[bank, addr] = 0xC3                      # jp RedisplayStartMenu
+                self.pyboy.memory[bank, addr + 1] = back & 0xFF
+                self.pyboy.memory[bank, addr + 2] = back >> 8
+                # The same Pokedex entry screen also pops up after catching a new
+                # Pokemon; skip it there too.
+                bank, addr = self.pyboy.symbol_lookup("ShowPokedexData")
+                self.pyboy.memory[bank, addr] = 0xC9                      # ret
+            except Exception as e:
+                print(f"[env] could not patch the start menu: {e}")
+
+        # Stall guard: if one step or reset ever takes longer than this (60 s; normal is under 1 s), exit this worker so
+        # training stops with an error and the watchdog restarts from the last
+        # checkpoint within a minute, instead of every agent waiting on one stuck
+        # game all night. (faulthandler's timer runs outside Python, so it fires
+        # even while PyBoy is stuck inside a frame.)
+        self.step_timeout_s = config.get("step_timeout_s", 60)
+
         if not config["headless"]:
             self.pyboy.set_emulation_speed(6)
         else:
@@ -339,6 +366,7 @@ class RedGymEnv(Env):
             )
 
     def reset(self, seed=None, options={}):
+        self._arm_stall_guard(at_reset=True)
         self.seed = seed
         next_reset_count = self.reset_count + 1
         if self.gc_every_n_resets > 0 and next_reset_count % self.gc_every_n_resets == 0:
@@ -462,10 +490,27 @@ class RedGymEnv(Env):
         # Calculate initial health and pass it to _get_obs
         initial_health = self.read_hp_fraction()
     
-        return self._get_obs(initial_health), {}
+        obs = self._get_obs(initial_health)
+        if self.step_timeout_s:
+            faulthandler.cancel_dump_traceback_later()
+        return obs, {}
 
     def init_map_mem(self):
         self.seen_coords = {}
+        self.inherited_tiles = 0
+
+    def apply_lineage(self, coords, maps):
+        """Starting from a milestone save: mark everything its line of agents already
+        explored as seen (long ago, so no revisit cost) and its maps as visited, so
+        walking back over old ground earns nothing. Called before the starting
+        reward total is taken, so this gives no reward either."""
+        for x, y, m in coords.tolist():
+            self.seen_coords[(x, y, m)] = -10**9
+            gy, gx = local_to_global(y, x, m)
+            if 0 <= gy < self.explore_map.shape[0] and 0 <= gx < self.explore_map.shape[1]:
+                self.explore_map[gy, gx] = 255
+        self.maps_visited.update(int(m) for m in maps.tolist())
+        self.inherited_tiles = len(self.seen_coords)
 
     def full_screen(self):
         """Full-size current screen for check-in reports. (A separate name from
@@ -506,7 +551,22 @@ class RedGymEnv(Env):
 
         return observation
 
+    def _arm_stall_guard(self, at_reset=False):
+        if self.step_timeout_s:
+            if getattr(self, "_stall_log", None) is None:
+                # Where a stuck worker was when the guard fired, for diagnosis
+                stall_dir = self.s_path.parent / "stalls"
+                stall_dir.mkdir(parents=True, exist_ok=True)
+                self._stall_log = open(stall_dir / f"agent_{self.agent_id:02d}.txt", "a")
+            if at_reset:  # one line per episode, so the file stays small
+                self._stall_log.write(f"--- reset {self.reset_count + 1} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self._stall_log.flush()
+            faulthandler.dump_traceback_later(self.step_timeout_s, exit=True, file=self._stall_log)
+
     def step(self, action):
+        # The stall guard only times this step's own work; it's switched off again
+        # before returning, so time spent waiting for the trainer never counts.
+        self._arm_stall_guard()
         self._step_trace_t0_ns = time.perf_counter_ns()
         self._trace_step_phase("step_begin")
         if self.save_video and self.step_count == 0:
@@ -582,6 +642,8 @@ class RedGymEnv(Env):
 
         self.step_count += 1
         self._trace_step_phase("step_end")
+        if self.step_timeout_s:
+            faulthandler.cancel_dump_traceback_later()
         return obs, new_reward, False, step_limit_reached, {}
     
     def run_action_on_emulator(self, action):
@@ -673,7 +735,9 @@ class RedGymEnv(Env):
             "stats_menu": self.start_stats_count,
             "pokemon_menu": self.start_pokemenu_count,
             "item_menu": self.start_itemmenu_count,
+            "milestone": (self.milestones.highest + 1) if self.milestones is not None else 0,  # 1-based; 0 = none
             "trees_cut": len(self.trees_cut),
+            "new_tiles": len(self.seen_coords) - getattr(self, "inherited_tiles", 0),
             "cut_tries": sum(self.cut_results.values()),
             "knows_cut": cut_action.party_slot_with_cut(self) is not None,
             "milestones_this_run": len(self.milestones.reached_this_run) if self.milestones is not None else 0,

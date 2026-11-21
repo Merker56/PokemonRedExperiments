@@ -34,6 +34,11 @@ def start_label(key):
     return "the beginning"
 
 
+def milestone_label(n):
+    """n is 1-based (0 = none yet)."""
+    return MILESTONES[n - 1][1] if 1 <= n <= len(MILESTONES) else "-"
+
+
 def cut_cell(a):
     if a.get("trees_cut"):
         return f"✂️ {a['trees_cut']} tree(s)"
@@ -89,8 +94,11 @@ class CheckinReportCallback(BaseCallback):
                 "id": i,
                 "badges": int(st.get("badge", 0)),
                 "map_progress": int(st.get("max_map_progress", 0)),
+                "milestone": int(st.get("milestone", 0)),
                 "location": map_name(st.get("map", -1)),
-                "tiles": int(st.get("coord_count", 0)),
+                # New ground this run (agents starting from a milestone inherit
+                # their line's explored tiles; those don't count here)
+                "tiles": int(st.get("new_tiles", st.get("coord_count", 0))),
                 "levels_sum": int(st.get("levels_sum", 0)),
                 "deaths": int(st.get("deaths", 0)),
                 "caught": int(st.get("pokemon_caught", 0) or 0),
@@ -132,12 +140,14 @@ class CheckinReportCallback(BaseCallback):
             Image.fromarray(m.astype(np.uint8)).resize(
                 (m.shape[1] * 3, m.shape[0] * 3), Image.NEAREST).save(folder / "explored_map.png")
 
-        ranked = sorted(agents, key=lambda a: (a["badges"], a["map_progress"], a["tiles"]), reverse=True)
+        # Rank by furthest milestone (covers the whole game), then badges, then new ground
+        ranked = sorted(agents, key=lambda a: (a["milestone"], a["badges"], a["tiles"]), reverse=True)
         summary = {
             "time": time.strftime("%Y-%m-%d %H:%M"),
             "session": self.session_id,
             "timesteps": int(self.num_timesteps),
-            "best_badges": ranked[0]["badges"] if ranked else 0,
+            "best_badges": max((a["badges"] for a in agents), default=0),
+            "best_milestone": ranked[0]["milestone"] if ranked else 0,
             "best_location": ranked[0]["location"] if ranked else "",
             "best_tiles": max((a["tiles"] for a in agents), default=0),
             "best_levels": max((a["levels_sum"] for a in agents), default=0),
@@ -189,7 +199,7 @@ class CheckinReportCallback(BaseCallback):
         for place, a in enumerate(ranked, 1):
             team = ", ".join(f"{e(str(p['name']))} L{p['level']}" for p in a["party"]) or "-"
             rows.append(
-                f"<tr><td>{place}</td><td>Agent {a['id']}</td><td>{'🏅' * a['badges'] or '-'}</td>"
+                f"<tr><td>{place}</td><td>Agent {a['id']}</td><td>{e(milestone_label(a['milestone']))}</td><td>{'🏅' * a['badges'] or '-'}</td>"
                 f"<td>{e(a['location'])}</td><td>{a['tiles']:,}</td><td>{a['levels_sum']}</td>"
                 f"<td>{a['deaths']}</td><td>{cut_cell(a)}</td><td>{team}</td></tr>")
 
@@ -247,13 +257,14 @@ td,th{{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;font-size:1
 <p>{e(s['time'])} · {s['timesteps']:,} total steps{change('timesteps')}</p>
 {hours}
 <div class='big'>
+ <div class='stat'><b>{e(milestone_label(s.get('best_milestone', 0)))}</b>furthest milestone{change('best_milestone')}</div>
  <div class='stat'><b>{s['best_badges']}</b>most badges{change('best_badges')}</div>
  <div class='stat'><b>{e(s['best_location'])}</b>leader is here</div>
- <div class='stat'><b>{s['best_tiles']:,}</b>most tiles explored{change('best_tiles')}</div>
+ <div class='stat'><b>{s['best_tiles']:,}</b>most new tiles in a run{change('best_tiles')}</div>
  <div class='stat'><b>{s['best_levels']}</b>best team level total{change('best_levels')}</div>
 </div>
 <h2>Leaderboard</h2>
-<table><tr><th>#</th><th>Agent</th><th>Badges</th><th>Where</th><th>Tiles</th><th>Levels</th><th>Faints</th><th>Cut</th><th>Team</th></tr>
+<table><tr><th>#</th><th>Agent</th><th>Furthest milestone</th><th>Badges</th><th>Where</th><th>New tiles</th><th>Levels</th><th>Faints</th><th>Cut</th><th>Team</th></tr>
 {''.join(rows)}</table>
 {ladder_html}
 <h2>Everywhere they've walked</h2>
@@ -271,11 +282,11 @@ td,th{{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;font-size:1
                 continue
             entries.append(
                 f"<tr><td><a href='{p.name}/report.html'>{html.escape(d['time'])}</a></td>"
-                f"<td>{d['timesteps']:,}</td><td>{d['best_badges']}</td>"
+                f"<td>{d['timesteps']:,}</td><td>{html.escape(milestone_label(d.get('best_milestone', 0)))}</td><td>{d['best_badges']}</td>"
                 f"<td>{html.escape(d['best_location'])}</td><td>{d['best_tiles']:,}</td><td>{d['best_levels']}</td></tr>")
         (self.out_dir / "index.html").write_text(
             "<!doctype html><meta charset='utf-8'><title>Training check-ins</title>"
             "<style>body{font-family:system-ui;margin:24px}td,th{padding:6px 12px;text-align:left}</style>"
-            "<h1>Training check-ins</h1><table><tr><th>When</th><th>Steps</th><th>Best badges</th>"
+            "<h1>Training check-ins</h1><table><tr><th>When</th><th>Steps</th><th>Furthest milestone</th><th>Best badges</th>"
             "<th>Leader location</th><th>Most tiles</th><th>Best levels</th></tr>"
             + "".join(entries) + "</table>", encoding="utf-8")

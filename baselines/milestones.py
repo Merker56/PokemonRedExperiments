@@ -21,11 +21,20 @@ The ladder decides where each agent starts a run:
 * Only the newest `window` milestones are used by rotating agents; older ones
   are retired from the rotation (base agents still cover them).
 
-Everything lives in files, so the 12 emulator processes never need to talk to
+Each save also carries its *lineage*: every tile its line of agents has explored
+and every map it has visited, all the way back to the base state. An agent that
+starts from the save gets those preloaded, so walking back to old towns earns
+nothing; only genuinely new ground pays. (Saves from before this existed are
+ignored, and the ladder rebuilds itself.)
+
+Everything lives in files, so the emulator processes never need to talk to
 each other, and the ladder carries on after a watchdog restart.
 """
+SAVE_FORMAT = 2   # 2 = saves carry lineage (explored tiles + visited maps)
 import io
 import json
+
+import numpy as np
 import os
 import time
 import uuid
@@ -135,8 +144,11 @@ class Archive:
             except Exception:
                 continue  # half-written by another process; it'll be readable next time
             state = meta.with_suffix(".state")
-            if m.get("base_state") == self.base and state.exists():
+            lineage = meta.with_suffix(".lineage.npz")
+            if (m.get("base_state") == self.base and m.get("format") == SAVE_FORMAT
+                    and state.exists() and lineage.exists()):
                 m["state_path"] = str(state)
+                m["lineage_path"] = str(lineage)
                 out.append(m)
         return sorted(out, key=lambda m: m["total_steps"])
 
@@ -147,17 +159,21 @@ class Archive:
         """Indices of milestones that have at least one save, ascending."""
         return [i for i, (key, _, _) in enumerate(MILESTONES) if self.best(key, 1)]
 
-    def add(self, key, state_bytes, meta, keep=5):
+    def add(self, key, state_bytes, meta, lineage, keep=5):
         folder = self.root / key
         folder.mkdir(parents=True, exist_ok=True)
         existing = self.saves(key)
         if len(existing) >= keep and meta["total_steps"] >= existing[keep - 1]["total_steps"]:
             return False  # slower than everything we keep; not worth storing
         name = f"{meta['total_steps']:012d}_a{meta['agent']:02d}_{uuid.uuid4().hex[:6]}"
+        meta = dict(meta, format=SAVE_FORMAT)
+        buf = io.BytesIO()
+        np.savez_compressed(buf, coords=lineage[0], maps=lineage[1])
+        _atomic_write(folder / f"{name}.lineage.npz", buf.getvalue())
         _atomic_write(folder / f"{name}.state", state_bytes)
-        _atomic_write(folder / f"{name}.json", json.dumps(meta, indent=1), mode="w")
+        _atomic_write(folder / f"{name}.json", json.dumps(meta, indent=1), mode="w")  # last: marks it complete
         for old in self.saves(key)[keep:]:  # prune the slowest
-            for suffix in (".state", ".json"):
+            for suffix in (".json", ".state", ".lineage.npz"):
                 try:
                     Path(old["state_path"]).with_suffix(suffix).unlink()
                 except OSError:
@@ -233,13 +249,21 @@ class MilestoneTracker:
         self.pending = {}        # milestone index -> step first seen
         self.reached_this_run = set()  # for the one-time milestone reward
 
+    @property
+    def highest(self):
+        """Index of the furthest milestone this agent's game has reached (-1 = none)."""
+        reached = self.done | self.reached_this_run
+        return max(reached) if reached else -1
+
     def choose_start(self):
+        self.start_meta = None
         if self.ladder is None:
             self.offset, self.start_key = 0, "base"
             return None
         meta, key = self.ladder.next_start()
         self.offset = meta["total_steps"] if meta else 0
         self.start_key = key
+        self.start_meta = meta
         return meta["state_path"] if meta else None
 
     def after_load(self):
@@ -253,6 +277,14 @@ class MilestoneTracker:
                      if i <= start_idx or self._safe(check)}
         self.pending = {}
         self.reached_this_run = set()
+        # Preload where this save's line of agents has already been
+        meta = getattr(self, "start_meta", None)
+        if meta and self.start_key != "base":
+            try:
+                with np.load(meta["lineage_path"]) as z:
+                    self.env.apply_lineage(z["coords"], z["maps"])
+            except Exception as e:
+                print(f"[milestone] agent {self.env.agent_id}: no lineage loaded ({e})")
 
     def _safe(self, check):
         try:
@@ -309,6 +341,10 @@ class MilestoneTracker:
             "base_state": self.archive.base,
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        if self.archive.add(key, buf.getvalue(), meta):
+        coords = np.array(list(e.seen_coords.keys()), dtype=np.int16).reshape(-1, 3)
+        maps = np.array(sorted(e.maps_visited), dtype=np.int16)
+        meta["lineage_tiles"] = int(len(coords))
+        meta["lineage_maps"] = int(len(maps))
+        if self.archive.add(key, buf.getvalue(), meta, (coords, maps)):
             print(f"\n[milestone] agent {e.agent_id}: {label} in {meta['total_steps']:,} total steps "
                   f"(from {self.start_key})")

@@ -12,6 +12,15 @@ import json
 import time
 from pathlib import Path
 
+try:
+    from milestones import MILESTONES
+except Exception:
+    MILESTONES = []
+
+
+def milestone_label(n):
+    return MILESTONES[n - 1][1] if 1 <= n <= len(MILESTONES) else "-"
+
 RUNS = Path("runs")
 
 
@@ -81,18 +90,18 @@ def main():
         best = lambda k: max(b.get(k, 0) for b in with_stats)
         print("\nBest agent so far:")
         print(f"  badges:           {best('badges_max')}")
-        print(f"  map progress:     {best('map_progress_max')}")
+        print(f"  furthest milestone: {milestone_label(best('milestone_max'))}")
         print(f"  tiles explored:   {best('coords_max'):,}")
         print(f"  party level sum:  {best('levels_sum_max')}")
 
         # A few snapshots across the night, so you can see the trend
         print("\nThrough the night (best agent at each point):")
-        print("  time                 steps         badges  map  tiles   levels")
+        print("  time                 steps         badges  milestone                    tiles   levels")
         n = len(with_stats)
         picks = sorted(set([0, n // 4, n // 2, 3 * n // 4, n - 1]))
         for i in picks:
             b = with_stats[i]
-            print(f"  {b['time']}  {b['timesteps']:>12,}  {b['badges_max']:>6}  {b['map_progress_max']:>3}"
+            print(f"  {b['time']}  {b['timesteps']:>12,}  {b['badges_max']:>6}  {milestone_label(b.get('milestone_max', 0)):28.28}"
                   f"  {b['coords_max']:>6,}  {b['levels_sum_max']:>6}")
 
     mem = [b for b in beats if "system_used_pct" in b]

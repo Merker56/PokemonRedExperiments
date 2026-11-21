@@ -1,0 +1,15 @@
+{
+ "milestone": "04_pewter",
+ "label": "Reached Pewter City",
+ "total_steps": 8224,
+ "run_steps": 8224,
+ "started_from": "base",
+ "agent": 2,
+ "hp_fraction": 0.94,
+ "levels": [
+  10
+ ],
+ "badges": 0,
+ "base_state": "Bulbasaur.state",
+ "time": "2026-11-21 16:12:49"
+}

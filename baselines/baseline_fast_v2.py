@@ -1,4 +1,8 @@
 import argparse
+import warnings
+# With --map, the agents are wrapped in StreamWrapper and reading their stats
+# goes through it. gymnasium warns about that access style, but it works fine.
+warnings.filterwarnings("ignore", message=".*to get variables from other wrappers is deprecated.*")
 from pathlib import Path
 import uuid
 from red_gym_env_v2 import RedGymEnv
@@ -10,6 +14,7 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.callbacks import CheckpointCallback
 from tensorboard_callback import TensorboardCallback
 from heartbeat_callback import HeartbeatCallback
+from guarded_vec_env import GuardedSubprocVecEnv
 from checkin_report import CheckinReportCallback
 
 
@@ -25,8 +30,13 @@ def make_env(rank, env_conf, seed=0):
     Utility function for multiprocessed env.
     """
     def _init():
-        env_conf['rank'] = rank
-        base_env = RedGymEnv(env_conf)
+        conf = dict(env_conf)
+        conf['rank'] = rank
+        # Base agents (always starting from the beginning) get a longer episode so
+        # they can get through Viridian Forest and keep finding faster early routes.
+        if rank < conf.get('ladder_n_base', 0) and conf.get('base_ep_steps'):
+            conf['max_steps'] = conf['base_ep_steps']
+        base_env = RedGymEnv(conf)
         should_stream = env_conf.get("enable_stream", False)
         if should_stream:
             env = StreamWrapper(
@@ -39,7 +49,7 @@ def make_env(rank, env_conf, seed=0):
                     "extra": "",
                     "upload_interval": env_conf.get("stream_upload_interval", 120),
                     "ws_timeout_s": env_conf.get("stream_timeout_s", 0.5),
-                    "include_extra": not env_conf.get("headless", True),
+                    "include_extra": True,  # lead Pokemon name and level, shown next to the dot
                 },
             )
         else:
@@ -67,6 +77,8 @@ if __name__ == "__main__":
                         help="quality mode: broadcast to the live map and save debug images (slower)")
     parser.add_argument("--base-agents", type=int, default=4,
                         help="agents that always start from the base state; the rest rotate through milestone saves")
+    parser.add_argument("--base-ep-steps", type=int, default=0,
+                        help="optional longer episode for base agents (0 = same 20,480 as everyone, as in April)")
     parser.add_argument("--ladder-window", type=int, default=5,
                         help="rotating agents only use the newest N milestones")
     parser.add_argument("--no-ladder", action="store_true",
@@ -178,6 +190,7 @@ if __name__ == "__main__":
     env_config['archive_dir'] = archive_dir
     env_config['n_envs'] = env_config['num_envs']
     env_config['ladder_n_base'] = args.base_agents
+    env_config['base_ep_steps'] = args.base_ep_steps
     env_config['ladder_window'] = args.ladder_window
 
     print(f"Using mode_speed={mode_speed}")
@@ -188,7 +201,14 @@ if __name__ == "__main__":
     # fork: workers share the already-imported libraries instead of re-importing
     # torch etc. in every process (less memory, faster start). Safe because CUDA
     # isn't initialised until the model is created below.
-    env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)], start_method="fork")
+    env = GuardedSubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)], start_method="fork")
+
+    # If the main process itself ever sits still for 3 minutes, write where it is
+    # to runs/stalls/main.txt (repeating, without stopping anything).
+    import faulthandler
+    (base_output_dir / "stalls").mkdir(parents=True, exist_ok=True)
+    _main_stall_log = open(base_output_dir / "stalls" / "main.txt", "a")
+    faulthandler.dump_traceback_later(180, repeat=True, file=_main_stall_log)
 
     # The main process only needs a few CPU threads (the GPU does the training);
     # leaving PyTorch's default (one per CPU thread) makes it fight the emulators.

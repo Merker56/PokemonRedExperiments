@@ -1,0 +1,15 @@
+{
+ "milestone": "03_viridian_forest",
+ "label": "Entered Viridian Forest",
+ "total_steps": 424,
+ "run_steps": 424,
+ "started_from": "base",
+ "agent": 9,
+ "hp_fraction": 0.91,
+ "levels": [
+  6
+ ],
+ "badges": 0,
+ "base_state": "Bulbasaur.state",
+ "time": "2026-11-21 13:36:04"
+}

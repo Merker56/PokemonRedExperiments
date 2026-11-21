@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--base-agents", type=int, default=None,
                     help="agents that always start from the base state (passed to training)")
     ap.add_argument("--ladder-window", type=int, default=None)
+    ap.add_argument("--base-ep-steps", type=int, default=None)
     ap.add_argument("--no-ladder", action="store_true")
     ap.add_argument("--map", action="store_true", help="show agents on the shared live map")
     ap.add_argument("--map-name", default=None)
@@ -92,6 +93,8 @@ def main():
                "--checkin-minutes", str(args.checkin_minutes)]
         if args.base_agents is not None:
             cmd += ["--base-agents", str(args.base_agents)]
+        if args.base_ep_steps is not None:
+            cmd += ["--base-ep-steps", str(args.base_ep_steps)]
         if args.ladder_window is not None:
             cmd += ["--ladder-window", str(args.ladder_window)]
         if args.no_ladder:
