@@ -71,6 +71,10 @@ def main():
     ap.add_argument("--max-restarts", type=int, default=1000,
                     help="effectively unlimited: keep training no matter how many times it needs rescuing")
     ap.add_argument("--checkin-minutes", type=float, default=60)
+    ap.add_argument("--base-agents", type=int, default=None,
+                    help="agents that always start from the base state (passed to training)")
+    ap.add_argument("--ladder-window", type=int, default=None)
+    ap.add_argument("--no-ladder", action="store_true")
     args = ap.parse_args()
 
     deadline = time.time() + args.hours * 3600 if args.hours else None
@@ -82,6 +86,12 @@ def main():
     while True:
         cmd = [sys.executable, "baseline_fast_v2.py", "--num-envs", str(args.num_envs),
                "--checkin-minutes", str(args.checkin_minutes)]
+        if args.base_agents is not None:
+            cmd += ["--base-agents", str(args.base_agents)]
+        if args.ladder_window is not None:
+            cmd += ["--ladder-window", str(args.ladder_window)]
+        if args.no_ladder:
+            cmd.append("--no-ladder")
         if resume:
             cmd.append("--resume")
         if args.stream:
