@@ -32,9 +32,10 @@ def make_env(rank, env_conf, seed=0):
             env = StreamWrapper(
                 base_env,
                 stream_metadata={
-                    "user": "JoetheAIGuy",
+                    "user": env_conf.get("map_name", "JoetheAIGuy"),
                     "env_id": rank,
-                    "color": "#000080",
+                    "color": env_conf.get("map_color", "#000080"),
+                    "sprite_id": env_conf.get("map_sprite", 0),
                     "extra": "",
                     "upload_interval": env_conf.get("stream_upload_interval", 120),
                     "ws_timeout_s": env_conf.get("stream_timeout_s", 0.5),
@@ -57,6 +58,11 @@ if __name__ == "__main__":
                         help="continue from this checkpoint .zip instead of the newest one")
     parser.add_argument("--num-envs", type=int, default=12,
                         help="parallel game environments (12 suits a 16-thread CPU with 24 GB for WSL)")
+    parser.add_argument("--map", action="store_true",
+                        help="show the agents on the shared live map (pwhiddy.github.io/pokerl-map-viz) without changing training settings")
+    parser.add_argument("--map-name", default="JoetheAIGuy", help="name shown on the live map")
+    parser.add_argument("--map-color", default="#000080", help="colour on the live map")
+    parser.add_argument("--map-sprite", type=int, default=0, help="character sprite on the live map (0-50)")
     parser.add_argument("--stream", action="store_true",
                         help="quality mode: broadcast to the live map and save debug images (slower)")
     parser.add_argument("--base-agents", type=int, default=4,
@@ -162,6 +168,11 @@ if __name__ == "__main__":
     env_config = {**base_env_config, **mode_overrides}
     # Batch stream uploads on the same cadence as heavier env updates.
     env_config['stream_upload_interval'] = env_config['update_freq']
+    if args.map:  # live map only; observation/training settings stay as in speed mode
+        env_config['enable_stream'] = True
+    env_config['map_name'] = args.map_name
+    env_config['map_color'] = args.map_color
+    env_config['map_sprite'] = args.map_sprite
     # Milestone saves + start-state ladder (milestones.py). Lives in runs/archive so it
     # carries across sessions and watchdog restarts.
     env_config['archive_dir'] = archive_dir

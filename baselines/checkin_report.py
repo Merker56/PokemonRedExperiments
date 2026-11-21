@@ -77,7 +77,7 @@ class CheckinReportCallback(BaseCallback):
         env = self.training_env
         stats = [s[0] if s else {} for s in env.get_attr("agent_stats")]
         parties = env.get_attr("party_info")
-        screens = env.env_method("render", reduce_res=False)
+        screens = env.env_method("full_screen")
         explore = np.array(env.get_attr("explore_map"))
         try:
             starts = env.get_attr("start_key")

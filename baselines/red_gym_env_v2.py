@@ -467,6 +467,12 @@ class RedGymEnv(Env):
     def init_map_mem(self):
         self.seen_coords = {}
 
+    def full_screen(self):
+        """Full-size current screen for check-in reports. (A separate name from
+        render() so it still works through StreamWrapper, whose render() drops
+        arguments.)"""
+        return self.render(reduce_res=False)
+
     def render(self, reduce_res=True):
         game_pixels_render = self.screen.ndarray[:,:,0:1]  # (144, 160, 3)
         if reduce_res:

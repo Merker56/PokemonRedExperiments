@@ -75,6 +75,10 @@ def main():
                     help="agents that always start from the base state (passed to training)")
     ap.add_argument("--ladder-window", type=int, default=None)
     ap.add_argument("--no-ladder", action="store_true")
+    ap.add_argument("--map", action="store_true", help="show agents on the shared live map")
+    ap.add_argument("--map-name", default=None)
+    ap.add_argument("--map-color", default=None)
+    ap.add_argument("--map-sprite", type=int, default=None)
     args = ap.parse_args()
 
     deadline = time.time() + args.hours * 3600 if args.hours else None
@@ -92,6 +96,11 @@ def main():
             cmd += ["--ladder-window", str(args.ladder_window)]
         if args.no_ladder:
             cmd.append("--no-ladder")
+        if args.map:
+            cmd.append("--map")
+        for flag, val in (("--map-name", args.map_name), ("--map-color", args.map_color), ("--map-sprite", args.map_sprite)):
+            if val is not None:
+                cmd += [flag, str(val)]
         if resume:
             cmd.append("--resume")
         if args.stream:
