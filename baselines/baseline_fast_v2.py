@@ -3,6 +3,7 @@ from pathlib import Path
 import uuid
 from red_gym_env_v2 import RedGymEnv
 from stream_agent_wrapper import StreamWrapper
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
@@ -173,7 +174,14 @@ if __name__ == "__main__":
 
     num_cpu = env_config.get("num_envs", 16)
     print(f"Using {num_cpu} parallel environments")
-    env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
+    # fork: workers share the already-imported libraries instead of re-importing
+    # torch etc. in every process (less memory, faster start). Safe because CUDA
+    # isn't initialised until the model is created below.
+    env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)], start_method="fork")
+
+    # The main process only needs a few CPU threads (the GPU does the training);
+    # leaving PyTorch's default (one per CPU thread) makes it fight the emulators.
+    torch.set_num_threads(4)
 
     # Fresh start by default. --resume picks up the newest checkpoint (used by the
     # watchdog after a restart); --checkpoint picks a specific one.

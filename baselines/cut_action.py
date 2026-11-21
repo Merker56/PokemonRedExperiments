@@ -91,28 +91,29 @@ def front_block(env, facing):
 
 
 def _press(env, button, release, frames=None, hold=8):
+    # Frames aren't rendered here (nobody sees them); the env renders the last
+    # frame of the step before taking the observation.
     frames = frames or env.act_freq
     env.pyboy.send_input(button)
-    for i in range(frames):
-        if i == hold:
-            env.pyboy.send_input(release)
-        env.pyboy.tick()
+    env.pyboy.tick(hold, False)
+    env.pyboy.send_input(release)
+    if frames > hold:
+        env.pyboy.tick(frames - hold, False)
 
 
 def _wait(env, frames):
-    for _ in range(frames):
-        env.pyboy.tick()
+    env.pyboy.tick(frames, False)
 
 
 def use_cut(env):
     """Run Start -> Pokemon -> (Pokemon with Cut) -> CUT in the facing direction.
     Returns 'no_cut_pokemon', 'in_battle', 'no_effect' or 'cut'."""
     if env.read_m(IS_IN_BATTLE) != 0:
-        _wait(env, env.act_freq)
+        _wait(env, env.act_freq - 1); env.pyboy.tick(1, True)
         return "in_battle"
     slot = party_slot_with_cut(env)
     if slot is None:
-        _wait(env, env.act_freq)
+        _wait(env, env.act_freq - 1); env.pyboy.tick(1, True)
         return "no_cut_pokemon"
 
     E = WindowEvent
@@ -146,8 +147,9 @@ def use_cut(env):
     _wait(env, 240)                                                        # animation / message
     for _ in range(4):                                         # close text and any menus
         _press(env, E.PRESS_BUTTON_B, E.RELEASE_BUTTON_B, frames=30)
-    _wait(env, 30)
+    _wait(env, 29)
 
+    env.pyboy.tick(1, True)  # render the frame the agent will see
     after = front_block(env, facing)
     changed = before is not None and after is not None and before != after
     if changed and env.get_game_coords() == (x, y, map_n) and env.read_m(IS_IN_BATTLE) == 0:

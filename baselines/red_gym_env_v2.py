@@ -125,6 +125,7 @@ class RedGymEnv(Env):
         self.milestones = None
         self.start_key = "base"
         self.auto_teach_hms = config.get("auto_teach_hms", True)
+        self._render_all_next = True
         self.trees_cut = set()
         self.cut_results = {}
         self.revisit_cost_total = 0.0
@@ -381,6 +382,7 @@ class RedGymEnv(Env):
                 with open(self.init_state, "rb") as f:
                     self.pyboy.load_state(f)
         self.start_key = self.milestones.start_key if self.milestones is not None else "base"
+        self._render_all_next = True
 
         self.init_map_mem()
 
@@ -577,33 +579,38 @@ class RedGymEnv(Env):
         return obs, new_reward, False, step_limit_reached, {}
     
     def run_action_on_emulator(self, action):
-        # press button then release after some steps
+        """Press the button, run act_freq frames, release.
+
+        Performance: only the last frame of each step is rendered to the screen
+        buffer, because that's the only one the agent sees (the observation is
+        taken after the step). Rendering every frame was more than half of the
+        emulator's time. Emulation itself is identical either way.
+        """
         self.pyboy.send_input(self.valid_actions[action])
-        
-        # disable rendering when we don't need it
-        for i in range(self.act_freq):
-            if (self.trace_step_phases or self.trace_step_file) and i % self.trace_tick_every == 0:
-                self._trace_step_phase(f"emulator_tick_begin_{i}")
-            # release action, so they are stateless
-            if self.release_action_tick >= 0 and i == self.release_action_tick:
-                if self.trace_step_phases or self.trace_step_file:
-                    self._trace_step_phase("release_send_begin")
-                # release button
-                self.pyboy.send_input(self.release_actions[action])
-                if self.trace_step_phases or self.trace_step_file:
-                    self._trace_step_phase("release_send_end")
-            if self.save_video and not self.fast_video:
-                self.add_video_frame()
-            self.pyboy.tick()
-            if (self.trace_step_phases or self.trace_step_file) and i % self.trace_tick_every == 0:
-                self._trace_step_phase(f"emulator_tick_end_{i}")
-        # Safer default on Windows: release after the action tick window.
+        # Right after loading a save, PyBoy's tile cache is only rebuilt while
+        # rendering, so render every frame of the first step (once per run).
+        render_all = (self.save_video and not self.fast_video) or self._render_all_next
+        self._render_all_next = False
+        tracing = self.trace_step_phases or self.trace_step_file
+        if render_all or tracing or self.release_action_tick >= 0:
+            # Slow path: frame-by-frame (video, tracing, or a mid-step release)
+            for i in range(self.act_freq):
+                if tracing and i % self.trace_tick_every == 0:
+                    self._trace_step_phase(f"emulator_tick_begin_{i}")
+                if self.release_action_tick >= 0 and i == self.release_action_tick:
+                    self.pyboy.send_input(self.release_actions[action])
+                if self.save_video and not self.fast_video:
+                    self.add_video_frame()
+                self.pyboy.tick(1, render_all or i == self.act_freq - 1)
+                if tracing and i % self.trace_tick_every == 0:
+                    self._trace_step_phase(f"emulator_tick_end_{i}")
+        else:
+            # Fast path: one call for all frames but the last, then render the last
+            if self.act_freq > 1:
+                self.pyboy.tick(self.act_freq - 1, False)
+            self.pyboy.tick(1, True)
         if self.release_action_tick < 0:
-            if self.trace_step_phases or self.trace_step_file:
-                self._trace_step_phase("release_send_begin")
             self.pyboy.send_input(self.release_actions[action])
-            if self.trace_step_phases or self.trace_step_file:
-                self._trace_step_phase("release_send_end")
         if self.save_video and self.fast_video:
             self.add_video_frame()
 
@@ -965,15 +972,20 @@ class RedGymEnv(Env):
                 c[0]-self.coords_pad:c[0]+self.coords_pad,
                 c[1]-self.coords_pad:c[1]+self.coords_pad
             ]
-        return repeat(out, 'h w -> (h h2) (w w2)', h2=2, w2=2)
+        # 2x upscale (same result as einops.repeat, ~10x faster)
+        return out.repeat(2, axis=0).repeat(2, axis=1)
     
     def update_recent_screens(self, cur_screen):
-        self.recent_screens = np.roll(self.recent_screens, 1, axis=2)
-        self.recent_screens[:, :, 0] = cur_screen[:,:, 0]
+        # Newest screen first, then the older ones (same as np.roll + assign, cheaper)
+        if self.recent_screens.shape[2] == 1:
+            self.recent_screens = cur_screen[:, :, :1].copy()
+        else:
+            self.recent_screens = np.concatenate(
+                (cur_screen[:, :, :1], self.recent_screens[:, :, :-1]), axis=2)
 
     def update_recent_actions(self, action):
-        self.recent_actions = np.roll(self.recent_actions, 1)
-        self.recent_actions[0] = action
+        self.recent_actions = np.concatenate(
+            (np.array([action], dtype=self.recent_actions.dtype), self.recent_actions[:-1]))
 
     def update_reward(self):
         # compute reward
