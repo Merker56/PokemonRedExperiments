@@ -304,6 +304,18 @@ class RedGymEnv(Env):
             gc.collect()
         if self.reset_stagger_s > 0:
             time.sleep(self.reset_stagger_s * self.agent_id)
+        # Event rewards count flags beyond the *base* start state. Measure that once
+        # from the base state itself, even if this worker's first run starts from a
+        # milestone save (otherwise base-state runs would earn no event reward until
+        # they passed the milestone's event count).
+        if not hasattr(self, 'base_event_flags'):
+            with open(self.init_state, "rb") as f:
+                self.pyboy.load_state(f)
+            self.base_event_flags = sum([
+                self.bit_count(self.read_m(i))
+                for i in range(event_flags_start, event_flags_end)
+            ])
+
         start_path = None
         if self.milestones is not None:
             try:
@@ -393,6 +405,11 @@ class RedGymEnv(Env):
         if self.milestones is not None:
             self.milestones.after_load()
         self._refresh_event_bits_cache()
+        # Fill the reward cache from the loaded game *before* taking the starting
+        # total. Otherwise the first cache refresh (~100 steps in) would pay out
+        # every level/move/event already in the save as if the agent just earned it,
+        # a large free reward on every milestone start.
+        self._update_reward_cache()
         self.progress_reward = self.get_game_state_reward()
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
         self.reset_count = next_reset_count
