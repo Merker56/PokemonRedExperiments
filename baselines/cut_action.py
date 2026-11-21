@@ -91,18 +91,20 @@ def front_block(env, facing):
 
 
 def _press(env, button, release, frames=None, hold=8):
-    # Frames aren't rendered here (nobody sees them); the env renders the last
-    # frame of the step before taking the observation.
+    # Headless training doesn't draw these frames (nobody sees them; the env draws
+    # the last frame of the step for the observation). With a window open, draw
+    # them all so you can watch the Cut menus.
     frames = frames or env.act_freq
+    draw = not env.headless
     env.pyboy.send_input(button)
-    env.pyboy.tick(hold, False)
+    env.pyboy.tick(hold, draw)
     env.pyboy.send_input(release)
     if frames > hold:
-        env.pyboy.tick(frames - hold, False)
+        env.pyboy.tick(frames - hold, draw)
 
 
 def _wait(env, frames):
-    env.pyboy.tick(frames, False)
+    env.pyboy.tick(frames, not env.headless)
 
 
 def use_cut(env):

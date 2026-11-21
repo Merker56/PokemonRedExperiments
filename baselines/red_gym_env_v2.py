@@ -589,7 +589,9 @@ class RedGymEnv(Env):
         self.pyboy.send_input(self.valid_actions[action])
         # Right after loading a save, PyBoy's tile cache is only rebuilt while
         # rendering, so render every frame of the first step (once per run).
-        render_all = (self.save_video and not self.fast_video) or self._render_all_next
+        # A visible window (headless=False, e.g. run_pretrained_interactive.py) needs
+        # every frame drawn so playback is smooth; so does a full-frame video.
+        render_all = (not self.headless) or (self.save_video and not self.fast_video) or self._render_all_next
         self._render_all_next = False
         tracing = self.trace_step_phases or self.trace_step_file
         if render_all or tracing or self.release_action_tick >= 0:
