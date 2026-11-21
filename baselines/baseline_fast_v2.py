@@ -9,6 +9,7 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.callbacks import CheckpointCallback
 from tensorboard_callback import TensorboardCallback
 from heartbeat_callback import HeartbeatCallback
+from checkin_report import CheckinReportCallback
 
 
 def find_latest_checkpoint(runs_dir):
@@ -57,6 +58,8 @@ if __name__ == "__main__":
                         help="parallel game environments (12 suits a 16-thread CPU with 24 GB for WSL)")
     parser.add_argument("--stream", action="store_true",
                         help="quality mode: broadcast to the live map and save debug images (slower)")
+    parser.add_argument("--checkin-minutes", type=float, default=60,
+                        help="write a check-in report (runs/checkins/) this often")
     parser.add_argument("--hours", type=float, default=0,
                         help="stop after roughly this many hours of training (0 = run until stopped)")
     args = parser.parse_args()
@@ -90,8 +93,15 @@ if __name__ == "__main__":
         stop_after_hours=args.hours,
     )
 
+    # Check-in reports to look through with the kids: runs/checkins/index.html
+    checkin_callback = CheckinReportCallback(
+        out_dir=base_output_dir / "checkins",
+        session_id=sess_id,
+        every_minutes=args.checkin_minutes,
+    )
+
     # Combine them in a list
-    callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback]
+    callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback, checkin_callback]
 
     base_env_config = {
         'headless': True, 'save_final_state': False, 'early_stop': False,

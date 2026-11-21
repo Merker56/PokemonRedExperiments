@@ -68,7 +68,9 @@ def main():
                     help="restart if no heartbeat for this long (heartbeat is ~every 30 s)")
     ap.add_argument("--startup-minutes", type=float, default=10,
                     help="grace period for a launch to write its first heartbeat")
-    ap.add_argument("--max-restarts", type=int, default=20)
+    ap.add_argument("--max-restarts", type=int, default=1000,
+                    help="effectively unlimited: keep training no matter how many times it needs rescuing")
+    ap.add_argument("--checkin-minutes", type=float, default=60)
     args = ap.parse_args()
 
     deadline = time.time() + args.hours * 3600 if args.hours else None
@@ -78,7 +80,8 @@ def main():
         f"stream={args.stream}, resume={resume}) ===")
 
     while True:
-        cmd = [sys.executable, "baseline_fast_v2.py", "--num-envs", str(args.num_envs)]
+        cmd = [sys.executable, "baseline_fast_v2.py", "--num-envs", str(args.num_envs),
+               "--checkin-minutes", str(args.checkin_minutes)]
         if resume:
             cmd.append("--resume")
         if args.stream:
