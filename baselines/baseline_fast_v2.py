@@ -39,7 +39,7 @@ def make_env(rank, env_conf, seed=0):
                     "extra": "",
                     "upload_interval": env_conf.get("stream_upload_interval", 120),
                     "ws_timeout_s": env_conf.get("stream_timeout_s", 0.5),
-                    "include_extra": not env_conf.get("headless", True),
+                    "include_extra": True,
                 },
             )
         else:
