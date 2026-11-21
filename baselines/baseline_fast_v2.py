@@ -11,11 +11,31 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
+import time
 from tensorboard_callback import TensorboardCallback
 from heartbeat_callback import HeartbeatCallback
 from guarded_vec_env import GuardedSubprocVecEnv
 from checkin_report import CheckinReportCallback
+
+
+class MainStallWatch(BaseCallback):
+    """Dump the main process's stack to a file only if no training step happens for
+    `seconds` (the timer is re-armed every 64 steps)."""
+    def __init__(self, path, seconds=180):
+        super().__init__()
+        import faulthandler
+        self._fh = faulthandler
+        self._file = open(path, "a")
+        self._seconds = seconds
+
+    def _on_step(self) -> bool:
+        if self.n_calls % 64 == 0:
+            self._fh.dump_traceback_later(self._seconds, repeat=False, file=self._file)
+        return True
+
+    def _on_training_end(self):
+        self._fh.cancel_dump_traceback_later()
 
 
 def find_latest_checkpoint(runs_dir):
@@ -77,6 +97,11 @@ if __name__ == "__main__":
                         help="quality mode: broadcast to the live map and save debug images (slower)")
     parser.add_argument("--base-agents", type=int, default=4,
                         help="agents that always start from the base state; the rest rotate through milestone saves")
+    parser.add_argument("--ep-length", type=int, default=1024 * 200,
+                        help="steps per episode (204,800 = the original setting)")
+    parser.add_argument("--rollout-steps", type=int, default=81920,
+                        help="steps of play collected across all agents before each learning update "
+                             "(81,920 = the original 8 agents x 10,240)")
     parser.add_argument("--base-ep-steps", type=int, default=0,
                         help="optional longer episode for base agents (0 = same 20,480 as everyone, as in April)")
     parser.add_argument("--ladder-window", type=int, default=5,
@@ -90,7 +115,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     mode_speed = not args.stream  # True: throughput mode, False: quality/streaming mode
-    ep_length = 1024 * 20
+    ep_length = args.ep_length
     
     # Define a top-level directory for all training runs
     base_output_dir = Path('runs')
@@ -104,7 +129,7 @@ if __name__ == "__main__":
 
     # The CheckpointCallback saves the model periodically
     checkpoint_callback = CheckpointCallback(
-        save_freq=ep_length, # Save every full episode per-agent
+        save_freq=1024 * 20,  # every 20,480 steps per agent (~4-5 min), independent of episode length
         save_path=sess_path,
         name_prefix="poke_model"
     )
@@ -130,7 +155,7 @@ if __name__ == "__main__":
     )
 
     # Combine them in a list
-    callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback, checkin_callback]
+    callbacks = [checkpoint_callback, tensorboard_callback, heartbeat_callback, checkin_callback, main_stall_watch]
 
     base_env_config = {
         'headless': True, 'save_final_state': False, 'early_stop': False,
@@ -203,12 +228,11 @@ if __name__ == "__main__":
     # isn't initialised until the model is created below.
     env = GuardedSubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)], start_method="fork")
 
-    # If the main process itself ever sits still for 3 minutes, write where it is
-    # to runs/stalls/main.txt (repeating, without stopping anything).
-    import faulthandler
+    # If training itself stops moving for 3 minutes, write where the main process is
+    # to runs/stalls/main.txt. The timer is pushed back on every training step (see
+    # MainStallWatch), so it only fires when the trainer has genuinely stopped.
     (base_output_dir / "stalls").mkdir(parents=True, exist_ok=True)
-    _main_stall_log = open(base_output_dir / "stalls" / "main.txt", "a")
-    faulthandler.dump_traceback_later(180, repeat=True, file=_main_stall_log)
+    main_stall_watch = MainStallWatch(base_output_dir / "stalls" / "main.txt")
 
     # The main process only needs a few CPU threads (the GPU does the training);
     # leaving PyTorch's default (one per CPU thread) makes it fight the emulators.
@@ -222,7 +246,14 @@ if __name__ == "__main__":
     elif args.resume:
         checkpoint = find_latest_checkpoint(base_output_dir)
 
-    train_steps_batch = ep_length // 20
+    # Steps per agent per learning update. This used to be ep_length // 20, which
+    # tied the update size (and the rollout buffer's RAM: ~38 KB per stored step)
+    # to episode length and agent count: 204,800-step episodes x 32 agents would be
+    # 327,680 steps (~12 GB) per update. Instead keep the original update size
+    # (81,920 steps = 8 agents x 10,240) whatever the number of agents.
+    train_steps_batch = max(128, (args.rollout_steps // num_cpu) // 64 * 64)
+    print(f"learning update every {train_steps_batch} steps per agent "
+          f"({train_steps_batch * num_cpu:,} steps total), episodes of {ep_length:,} steps")
 
     model = None
     if checkpoint is not None and checkpoint.exists():

@@ -1336,8 +1336,15 @@ class RedGymEnv(Env):
         ]
     
     def get_lead_pokemon_info(self):
-        ## Create string to add to stream['extra'] with pokemon name and level
-        self.extra_string = f"{self.get_pokemon_name(self.read_m(0xD164))}: {self.read_m(0xD18C)}" 
+        """Label shown next to this agent on the live map, e.g.
+        'Bulbasaur: 12 (+2) | 1 badge': lead Pokemon and level, how many others are
+        in the team, and the badge count."""
+        lead = f"{self.get_pokemon_name(self.read_m(0xD164))}: {self.read_m(0xD18C)}"
+        others = max(min(self.read_m(0xD163), 6) - 1, 0)
+        if others:
+            lead += f" (+{others})"
+        badges = self.get_badges()
+        self.extra_string = f"{lead} | {badges} badge{'' if badges == 1 else 's'}"
         return self.extra_string
 
     def get_all_events_reward(self):

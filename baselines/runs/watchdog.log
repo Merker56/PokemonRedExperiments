@@ -1,0 +1,4 @@
+2026-11-21 16:26:51  === overnight run starting (hours=until stopped, envs=32, stream=False, resume=False) ===
+2026-11-21 16:26:51  launching: baseline_fast_v2.py --num-envs 32 --checkin-minutes 60 --no-ladder --map
+2026-11-21 16:32:09  Ctrl+C received, stopping training
+2026-11-21 16:32:10  === stopped by user ===
