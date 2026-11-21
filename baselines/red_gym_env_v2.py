@@ -20,6 +20,7 @@ from pyboy.utils import WindowEvent
 
 from global_map import local_to_global, GLOBAL_MAP_SHAPE
 from map_lookup import MapIds
+from milestones import Archive, Ladder, MilestoneTracker
 from tilesets import Tilesets
 from field_moves import FieldMoves
 from generate_stream_overlay import update_agent_overlay, prepare_overlay_data
@@ -89,6 +90,17 @@ class RedGymEnv(Env):
             else config["instance_id"]
         )
         self.s_path.mkdir(exist_ok=True)
+
+        # Milestone saves + start-state ladder (see milestones.py)
+        self.milestones = None
+        self.start_key = "base"
+        if config.get("archive_dir"):
+            archive = Archive(config["archive_dir"], Path(self.init_state).name)
+            ladder = Ladder(archive, config["rank"], config.get("n_envs", 1),
+                            n_base=config.get("ladder_n_base", 4),
+                            window=config.get("ladder_window", 5))
+            self.milestones = MilestoneTracker(self, archive, ladder)
+
         self.trace_path = self.s_path / Path(f"trace_agent_{config['rank']}.log")
         self._trace_file = None
         self._trace_write_count = 0
@@ -292,11 +304,31 @@ class RedGymEnv(Env):
             gc.collect()
         if self.reset_stagger_s > 0:
             time.sleep(self.reset_stagger_s * self.agent_id)
-        if self.reset_state_mode == "memory":
-            self.pyboy.load_state(io.BytesIO(self._init_state_bytes))
-        else:
-            with open(self.init_state, "rb") as f:
-                self.pyboy.load_state(f)
+        start_path = None
+        if self.milestones is not None:
+            try:
+                start_path = self.milestones.choose_start()
+            except Exception as e:  # a bad archive must never stop training
+                print(f"[milestone] agent {self.agent_id}: could not pick a start ({e}); using base state")
+                start_path = None
+        loaded = False
+        if start_path:
+            try:
+                with open(start_path, "rb") as f:
+                    self.pyboy.load_state(f)
+                loaded = True
+            except Exception as e:
+                print(f"[milestone] agent {self.agent_id}: could not load {start_path} ({e}); using base state")
+        if not loaded:
+            if self.milestones is not None:
+                self.milestones.start_key = "base"
+                self.milestones.offset = 0
+            if self.reset_state_mode == "memory":
+                self.pyboy.load_state(io.BytesIO(self._init_state_bytes))
+            else:
+                with open(self.init_state, "rb") as f:
+                    self.pyboy.load_state(f)
+        self.start_key = self.milestones.start_key if self.milestones is not None else "base"
 
         self.init_map_mem()
 
@@ -358,6 +390,8 @@ class RedGymEnv(Env):
         # self.max_steps += 128
 
         self.max_map_progress = 0
+        if self.milestones is not None:
+            self.milestones.after_load()
         self._refresh_event_bits_cache()
         self.progress_reward = self.get_game_state_reward()
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
@@ -432,6 +466,12 @@ class RedGymEnv(Env):
         self.check_in_menus()
         new_reward = self.update_reward()
         self.update_seen_coords()
+        if self.milestones is not None:
+            try:
+                self.milestones.step()
+            except Exception as e:  # never let milestone bookkeeping stop training
+                if self.step_count % 1000 == 0:
+                    print(f"[milestone] agent {self.agent_id}: {e}")
         self._trace_step_phase("post_reward")
 
         if (self.disable_wild_encounters and self.read_m(0xD35E) in [59, 60, 61]):

@@ -24,6 +24,14 @@ from PIL import Image
 from stable_baselines3.common.callbacks import BaseCallback
 
 from map_lookup import MapIds
+from milestones import MILESTONES, Archive
+
+
+def start_label(key):
+    for k, label, _ in MILESTONES:
+        if k == key:
+            return label
+    return "the beginning"
 
 
 def map_name(map_n):
@@ -34,8 +42,9 @@ def map_name(map_n):
 
 
 class CheckinReportCallback(BaseCallback):
-    def __init__(self, out_dir, session_id, every_minutes=60, verbose=0):
+    def __init__(self, out_dir, session_id, every_minutes=60, archive_dir=None, base_state=None, verbose=0):
         super().__init__(verbose)
+        self.archive = Archive(archive_dir, base_state) if archive_dir else None
         self.out_dir = Path(out_dir)
         self.session_id = session_id
         self.every_seconds = every_minutes * 60
@@ -62,8 +71,12 @@ class CheckinReportCallback(BaseCallback):
         parties = env.get_attr("party_info")
         screens = env.env_method("render", reduce_res=False)
         explore = np.array(env.get_attr("explore_map"))
+        try:
+            starts = env.get_attr("start_key")
+        except Exception:
+            starts = ["base"] * len(stats)
         agents = []
-        for i, (st, party, scr) in enumerate(zip(stats, parties, screens)):
+        for i, (st, party, scr, start) in enumerate(zip(stats, parties, screens, starts)):
             agents.append({
                 "id": i,
                 "badges": int(st.get("badge", 0)),
@@ -79,6 +92,7 @@ class CheckinReportCallback(BaseCallback):
                     for p in (party or {}).values() if p
                 ],
                 "screen": np.asarray(scr),
+                "started_from": start,
             })
         return agents, explore
 
@@ -117,6 +131,7 @@ class CheckinReportCallback(BaseCallback):
             "best_tiles": max((a["tiles"] for a in agents), default=0),
             "best_levels": max((a["levels_sum"] for a in agents), default=0),
             "agents": agents,
+            "ladder": self._ladder(agents),
         }
         (folder / "data.json").write_text(json.dumps(summary, indent=1))
 
@@ -124,6 +139,22 @@ class CheckinReportCallback(BaseCallback):
         (folder / "report.html").write_text(self._html(summary, ranked, previous), encoding="utf-8")
         self._write_index()
         print(f"\n[check-in] report written: {folder / 'report.html'}")
+
+    def _ladder(self, agents):
+        if self.archive is None:
+            return []
+        rows = []
+        for key, label, _ in MILESTONES:
+            saves = self.archive.saves(key)
+            if not saves:
+                continue
+            best = saves[0]
+            rows.append({
+                "key": key, "label": label, "best_steps": best["total_steps"], "best_agent": best["agent"],
+                "best_time": best["time"], "saves": len(saves),
+                "starting_here": [a["id"] for a in agents if a.get("started_from") == key],
+            })
+        return rows
 
     def _previous_summary(self, current_stamp):
         folders = sorted(p for p in self.out_dir.iterdir() if p.is_dir() and p.name < current_stamp)
@@ -158,7 +189,28 @@ class CheckinReportCallback(BaseCallback):
                 f"<br><small>{e(', '.join(str(m) for m in p['moves']))}</small></li>" for p in a["party"])
             cards.append(
                 f"<div class='card'><img src='agent_{a['id']}.png'><h3>Agent {a['id']}</h3>"
-                f"<p>{e(a['location'])} · {a['badges']} badge(s)</p><ul>{moves}</ul></div>")
+                f"<p>{e(a['location'])} · {a['badges']} badge(s)<br><small>started this run from: "
+                f"{e(start_label(a.get('started_from', 'base')))}</small></p><ul>{moves}</ul></div>")
+
+        prev_best = {r["key"]: r["best_steps"] for r in (prev or {}).get("ladder", [])}
+        ladder_rows = []
+        for r in s.get("ladder", []):
+            if r["key"] not in prev_best:
+                note = " <span class='up'>NEW!</span>"
+            elif r["best_steps"] < prev_best[r["key"]]:
+                note = f" <span class='up'>faster by {prev_best[r['key']] - r['best_steps']:,}</span>"
+            else:
+                note = ""
+            here = ", ".join(f"Agent {i}" for i in r["starting_here"]) or "-"
+            ladder_rows.append(
+                f"<tr><td>{e(r['label'])}{note}</td><td>{r['best_steps']:,}</td><td>Agent {r['best_agent']}</td>"
+                f"<td>{e(r['best_time'])}</td><td>{here}</td></tr>")
+        ladder_html = ""
+        if ladder_rows:
+            ladder_html = ("<h2>Milestone ladder</h2><p>Fastest route found so far to each milestone "
+                           "(total steps from the start of the game), and which agents are practising from it.</p>"
+                           "<table><tr><th>Milestone</th><th>Fastest (steps)</th><th>Found by</th><th>When</th>"
+                           "<th>Starting here now</th></tr>" + "".join(ladder_rows) + "</table>")
 
         hours = ""
         if prev:
@@ -192,6 +244,7 @@ td,th{{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;font-size:1
 <h2>Leaderboard</h2>
 <table><tr><th>#</th><th>Agent</th><th>Badges</th><th>Where</th><th>Tiles</th><th>Levels</th><th>Faints</th><th>Team</th></tr>
 {''.join(rows)}</table>
+{ladder_html}
 <h2>Everywhere they've walked</h2>
 <img class='map' src='explored_map.png'>
 <h2>What each agent sees right now</h2>

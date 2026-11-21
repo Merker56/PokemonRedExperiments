@@ -58,6 +58,12 @@ if __name__ == "__main__":
                         help="parallel game environments (12 suits a 16-thread CPU with 24 GB for WSL)")
     parser.add_argument("--stream", action="store_true",
                         help="quality mode: broadcast to the live map and save debug images (slower)")
+    parser.add_argument("--base-agents", type=int, default=4,
+                        help="agents that always start from the base state; the rest rotate through milestone saves")
+    parser.add_argument("--ladder-window", type=int, default=5,
+                        help="rotating agents only use the newest N milestones")
+    parser.add_argument("--no-ladder", action="store_true",
+                        help="everyone starts from the base state (no milestone saves)")
     parser.add_argument("--checkin-minutes", type=float, default=60,
                         help="write a check-in report (runs/checkins/) this often")
     parser.add_argument("--hours", type=float, default=0,
@@ -69,6 +75,8 @@ if __name__ == "__main__":
     
     # Define a top-level directory for all training runs
     base_output_dir = Path('runs')
+    init_state = '../Bulbasaur.state'  # the base start state (intro already done)
+    archive_dir = None if args.no_ladder else str(base_output_dir.resolve() / "archive")
     base_output_dir.mkdir(exist_ok=True)
 
     # Create a unique session ID and the full path for this run
@@ -98,6 +106,8 @@ if __name__ == "__main__":
         out_dir=base_output_dir / "checkins",
         session_id=sess_id,
         every_minutes=args.checkin_minutes,
+        archive_dir=archive_dir,
+        base_state=Path(init_state).name,
     )
 
     # Combine them in a list
@@ -105,7 +115,7 @@ if __name__ == "__main__":
 
     base_env_config = {
         'headless': True, 'save_final_state': False, 'early_stop': False,
-        'action_freq': 24, 'init_state': '../Bulbasaur.state', 'max_steps': ep_length,
+        'action_freq': 24, 'init_state': init_state, 'max_steps': ep_length,
         'print_rewards': True, 'save_video': False, 'fast_video': True, 'session_path': sess_path,
         'gb_path': '../PokemonRed.gb', 'symbol_file': '../pokered.sym', 'debug': False, 'reward_scale': 2, 'explore_weight': 0.05,
         'disable_wild_encounters': ['MT_MOON_1F', 'MT_MOON_B1F', 'MT_MOON_B2F'],
@@ -151,6 +161,12 @@ if __name__ == "__main__":
     env_config = {**base_env_config, **mode_overrides}
     # Batch stream uploads on the same cadence as heavier env updates.
     env_config['stream_upload_interval'] = env_config['update_freq']
+    # Milestone saves + start-state ladder (milestones.py). Lives in runs/archive so it
+    # carries across sessions and watchdog restarts.
+    env_config['archive_dir'] = archive_dir
+    env_config['n_envs'] = env_config['num_envs']
+    env_config['ladder_n_base'] = args.base_agents
+    env_config['ladder_window'] = args.ladder_window
 
     print(f"Using mode_speed={mode_speed}")
     print(env_config)
