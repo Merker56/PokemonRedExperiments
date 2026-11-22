@@ -12,3 +12,5 @@ session_*
 PokemonRed.gb.state
 venv*
 .python-version
+runs/
+runs_*/
