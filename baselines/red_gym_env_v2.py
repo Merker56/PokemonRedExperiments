@@ -1410,8 +1410,9 @@ class RedGymEnv(Env):
             "exp": k * len(self.seen_coords) * R["new_tile"],
             "cap": k * pokedex_caught * R["caught"],
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * R["menu"],
-            "revisit": self.get_revisit_penalty(),            # April's shaping (state-based)
-            "ir": self.get_immediate_revisit_penalty(),
+            # Revisit penalties removed (Nov 21): their +/-5 swings drowned out the new-tile
+            # signal and taught agents to circle Pallet. get_revisit_penalty() and
+            # get_immediate_revisit_penalty() are kept below in case we want them back.
             "maps": k * self.get_accumulating_map_reward(),
             "move": k * move_rewards,
             "HMs": k * has_HMs,

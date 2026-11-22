@@ -98,10 +98,10 @@ if __name__ == "__main__":
     parser.add_argument("--base-agents", type=int, default=4,
                         help="agents that always start from the base state; the rest rotate through milestone saves")
     parser.add_argument("--ep-length", type=int, default=1024 * 200,
-                        help="steps per episode (204,800 = the original setting)")
-    parser.add_argument("--rollout-steps", type=int, default=81920,
+                        help="steps per episode (204,800 = the normal setting; 20,480 was only for testing reloads)")
+    parser.add_argument("--rollout-steps", type=int, default=32768,
                         help="steps of play collected across all agents before each learning update "
-                             "(81,920 = the original 8 agents x 10,240)")
+                             "(32,768 = April's 1,024 steps per agent with 32 agents)")
     parser.add_argument("--base-ep-steps", type=int, default=0,
                         help="optional longer episode for base agents (0 = same 20,480 as everyone, as in April)")
     parser.add_argument("--ladder-window", type=int, default=5,
@@ -249,8 +249,8 @@ if __name__ == "__main__":
     # Steps per agent per learning update. This used to be ep_length // 20, which
     # tied the update size (and the rollout buffer's RAM: ~38 KB per stored step)
     # to episode length and agent count: 204,800-step episodes x 32 agents would be
-    # 327,680 steps (~12 GB) per update. Instead keep the original update size
-    # (81,920 steps = 8 agents x 10,240) whatever the number of agents.
+    # 327,680 steps (~12 GB) per update. Instead set the update size directly:
+    # default 32,768 = April's 1,024 steps per agent with 32 agents.
     train_steps_batch = max(128, (args.rollout_steps // num_cpu) // 64 * 64)
     print(f"learning update every {train_steps_batch} steps per agent "
           f"({train_steps_batch * num_cpu:,} steps total), episodes of {ep_length:,} steps")
