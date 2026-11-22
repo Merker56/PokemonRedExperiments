@@ -25,6 +25,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from map_lookup import MapIds
 from milestones import MILESTONES, Archive
+from run_metrics import health_summary
 
 
 def start_label(key):
@@ -161,6 +162,49 @@ class CheckinReportCallback(BaseCallback):
         self._write_index()
         print(f"\n[check-in] report written: {folder / 'report.html'}")
 
+    def _health_html(self, timesteps):
+        """'How training is going': milestone firsts, curiosity, best saved policy."""
+        try:
+            h = health_summary(self.out_dir.parent)
+        except Exception:
+            h = None
+        if not h:
+            return ""
+        e = html.escape
+        parts = ["<h2>How training is going</h2>"]
+
+        ratio = h.get("entropy_ratio")
+        if ratio is not None:
+            if ratio < 0.5:
+                mood = ("<span style='color:#b42318;font-weight:600'>⚠️ Curiosity has dropped to "
+                        f"{ratio:.0%} of its peak.</span> The agents have mostly settled on one way of "
+                        "playing. If they're also stuck, they may be collapsing into a loop; consider "
+                        "restarting from the best saved policy below.")
+            elif ratio < 0.75:
+                mood = f"Curiosity is at {ratio:.0%} of its peak: settling down, worth watching."
+            else:
+                mood = f"<span class='up'>Curiosity is healthy</span> ({ratio:.0%} of its peak): still trying new things."
+            parts.append(f"<p>{mood} <small>(policy entropy {h['entropy_now']:.2f}, peak {h['entropy_peak']:.2f})</small></p>")
+
+        if h["firsts"]:
+            rows = "".join(
+                f"<tr><td>{e(r['label'])}</td><td>{r['timesteps']:,}</td><td>{r['per_agent']:,}</td>"
+                f"<td>{e(r['time'][5:16])}</td></tr>" for r in h["firsts"])
+            parts.append("<p>First time any agent got there in this run (the number to beat next time):</p>"
+                         "<table><tr><th>Milestone</th><th>Total steps</th><th>Steps per agent</th><th>When</th></tr>"
+                         f"{rows}</table>")
+
+        b = h.get("best")
+        if b and b.get("run_id") == h["run_id"]:
+            behind = ""
+            if timesteps - b["timesteps"] > 5_000_000:
+                behind = (f" That was {(timesteps - b['timesteps']) / 1e6:.0f}M steps ago; the agents "
+                          "haven't beaten it since.")
+            parts.append(f"<p>Best policy so far saved at {b['timesteps']:,} steps ({e(b['time'][5:16])}): "
+                         f"the average agent reached milestone {b['milestone_mean']:.1f}.{behind} "
+                         "<small>runs/best/best_model.zip</small></p>")
+        return "\n".join(parts)
+
     def _ladder(self, agents):
         if self.archive is None:
             return []
@@ -238,6 +282,8 @@ class CheckinReportCallback(BaseCallback):
             hours = f"<p>Since the last check-in ({e(prev['time'])}): " \
                     f"{s['timesteps'] - prev['timesteps']:,} more steps of practice.</p>"
 
+        health_html = self._health_html(s["timesteps"])
+
         return f"""<!doctype html><html><head><meta charset='utf-8'>
 <title>Check-in {e(s['time'])}</title>
 <style>
@@ -263,6 +309,7 @@ td,th{{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;font-size:1
  <div class='stat'><b>{s['best_tiles']:,}</b>most new tiles in a run{change('best_tiles')}</div>
  <div class='stat'><b>{s['best_levels']}</b>best team level total{change('best_levels')}</div>
 </div>
+{health_html}
 <h2>Leaderboard</h2>
 <table><tr><th>#</th><th>Agent</th><th>Furthest milestone</th><th>Badges</th><th>Where</th><th>New tiles</th><th>Levels</th><th>Faints</th><th>Cut</th><th>Team</th></tr>
 {''.join(rows)}</table>

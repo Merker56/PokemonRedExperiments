@@ -17,6 +17,7 @@ from tensorboard_callback import TensorboardCallback
 from heartbeat_callback import HeartbeatCallback
 from guarded_vec_env import GuardedSubprocVecEnv
 from checkin_report import CheckinReportCallback
+from run_metrics import RunMetricsCallback
 
 
 class MainStallWatch(BaseCallback):
@@ -276,6 +277,14 @@ if __name__ == "__main__":
                     tensorboard_log=sess_path, device="cuda")
 
     print(model.policy)
+
+    # Milestone timing, learning health and the best checkpoint (see run_metrics.py).
+    # A fresh launch starts a new "run"; --resume/--checkpoint continue the current one.
+    callbacks.append(RunMetricsCallback(
+        runs_dir=base_output_dir, fresh=checkpoint is None, session_id=sess_id,
+        settings={"num_envs": num_cpu, "ep_length": ep_length, "rollout_steps": train_steps_batch * num_cpu,
+                  "steps_per_agent_per_update": train_steps_batch, "ladder": not args.no_ladder,
+                  "checkpoint": str(checkpoint) if checkpoint else None}))
 
     # Effectively "until stopped": Ctrl+C, --hours, or the watchdog ends the run.
     total_timesteps = (ep_length) * num_cpu * 10_000
