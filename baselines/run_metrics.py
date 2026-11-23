@@ -8,8 +8,9 @@ Three things, all written under runs/ (the folder holding heartbeat.jsonl):
 
 * runs/learning.jsonl - how the learner itself is doing, every ~30 seconds:
   entropy ("curiosity": how much the policy still tries different buttons),
-  explained variance (how well it predicts its own rewards), plus the average
-  agent's milestone, new tiles and team size. Entropy usually falls well before
+  explained variance (how well it predicts its own rewards), the average
+  agent's milestone, new tiles and team size, and "points": the average agent's
+  score split by reward (event, maps, badge, exp, level...). Entropy usually falls well before
   behaviour collapses, so the check-in warns when it drops far below its peak.
 
 * runs/best/best_model.zip - a copy of the policy whenever the average agent's
@@ -171,13 +172,21 @@ class RunMetricsCallback(BaseCallback):
                     f.write(json.dumps({"run_id": self.run_id, "time": now, "timesteps": steps,
                                         "per_agent": steps // max(len(stats), 1), **n}) + "\n")
 
-        # 2. Learning health
+        # 2. Learning health, plus where the average agent's points come from
+        points = {}
+        try:
+            prs = [pr for pr in self.training_env.get_attr("progress_reward") if isinstance(pr, dict)]
+            for key in sorted({k for pr in prs for k in pr}):
+                points[key] = round(float(np.mean([pr.get(key, 0.0) for pr in prs])), 2)
+        except Exception:
+            pass
         record = {"run_id": self.run_id, "time": now, "timesteps": steps,
                   "milestone_mean": round(float(milestone.mean()), 2),
                   "milestone_max": int(milestone.max()),
                   "tiles_mean": round(float(tiles.mean()), 1),
                   "party_mean": round(float(party.mean()), 2),
-                  **{k: round(v, 4) for k, v in self.train_stats.items()}}
+                  **{k: round(v, 4) for k, v in self.train_stats.items()},
+                  "points": points}
         with open(self.runs_dir / "learning.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
@@ -213,6 +222,11 @@ def health_summary(runs_dir):
         out["entropy_ratio"] = ent[-1] / peak if peak > 0 else 1.0
     if learn:
         out["explained_variance"] = learn[-1].get("explained_variance")
+        # Point shares at the latest moment, from rewards the agents have earned (positive only)
+        pts = {k: v for k, v in (learn[-1].get("points") or {}).items() if v > 0}
+        total = sum(pts.values())
+        if total > 0:
+            out["points"] = sorted(((k, v, v / total) for k, v in pts.items()), key=lambda t: -t[1])
     try:
         out["best"] = json.loads((runs_dir / "best" / "best.json").read_text())
     except Exception:

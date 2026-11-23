@@ -194,6 +194,19 @@ class CheckinReportCallback(BaseCallback):
                          "<table><tr><th>Milestone</th><th>Total steps</th><th>Steps per agent</th><th>When</th></tr>"
                          f"{rows}</table>")
 
+        names = {"event": "Story events", "badge": "Badges", "maps": "New maps", "exp": "New tiles",
+                 "level": "Team levels", "cap": "Catches", "heal": "Healing", "cut": "Cut",
+                 "move": "Moves", "HMs": "HMs", "menu": "Menus", "milestone": "Milestones"}
+        if h.get("points"):
+            bars = "".join(
+                f"<tr><td>{e(names.get(k, k))}</td><td style='width:320px'><div style='background:#2f6fb5;"
+                f"height:14px;width:{max(share * 300, 2):.0f}px;border-radius:3px'></div></td>"
+                f"<td>{share:.0%}</td><td>{v:,.1f}</td></tr>"
+                for k, v, share in h["points"] if share >= 0.005)
+            parts.append("<p>Where the average agent's points come from right now (story events and "
+                         "badges should lead):</p><table><tr><th>Reward</th><th></th><th>Share</th>"
+                         f"<th>Points</th></tr>{bars}</table>")
+
         b = h.get("best")
         if b and b.get("run_id") == h["run_id"]:
             behind = ""

@@ -33,7 +33,8 @@ REWARDS = {
     "event":            10,    # each story event flag set
     "badge":           100,    # each gym badge: deliberately outsized
     "new_tile":       0.05,    # each new tile (same as explore_weight 0.05)
-    # maps: escalating curve in get_accumulating_map_reward (20/30/50/75 per new map)
+    "new_map":           2,    # each new map (town, route, building). Was April's escalating 20/30/50/75,
+                               # which made maps ~70% of all points at Vermilion (Nov 23)
     # revisit: April's get_revisit_penalty + get_immediate_revisit_penalty
     "level":             1,    # team levels (see get_levels_reward)
     "caught":            2,    # each Pokemon caught
@@ -70,6 +71,8 @@ class CutState(Enum):
 
 event_flags_start = 0xD747
 event_flags_end = 0xD7F6 # This must be the MAX value for the obs space definition
+event_flags_reward_end = 0xD887  # end of wEventFlags (exclusive): the REWARD counts every event flag;
+                                 # event_flags_end above stays as the observation size
 museum_ticket = (0xD754, 0)
 
 class RedGymEnv(Env):
@@ -377,7 +380,7 @@ class RedGymEnv(Env):
                 self.pyboy.load_state(f)
             self.base_event_flags = sum([
                 self.bit_count(self.read_m(i))
-                for i in range(event_flags_start, event_flags_end)
+                for i in range(event_flags_start, event_flags_reward_end)
             ])
 
         start_path = None
@@ -832,21 +835,14 @@ class RedGymEnv(Env):
             if current_map not in self.maps_visited:
                 self.maps_visited.add(current_map)
         
-        # Mathematical formula instead of loop
+        # Flat reward per new map (REWARDS["new_map"]); the old escalating curve
+        # (20/30/50/75) is kept below for reference.
         maps_discovered = len(self.maps_visited)
-        
-        if maps_discovered <= 5:
-            # 1-5 maps: 20 each = 20 * count
-            total_reward = 20 * maps_discovered
-        elif maps_discovered <= 10:
-            # 1-5: 20 each (100 total) + 6-10: 30 each
-            total_reward = 100 + (30 * (maps_discovered - 5))
-        elif maps_discovered <= 15:
-            # 1-5: 100 + 6-10: 150 + 11-15: 50 each
-            total_reward = 250 + (50 * (maps_discovered - 10))
-        else:
-            # 1-5: 100 + 6-10: 150 + 11-15: 250 + 16+: 75 each
-            total_reward = 500 + (75 * (maps_discovered - 15))
+        total_reward = REWARDS["new_map"] * maps_discovered
+        # if maps_discovered <= 5: total_reward = 20 * maps_discovered
+        # elif maps_discovered <= 10: total_reward = 100 + (30 * (maps_discovered - 5))
+        # elif maps_discovered <= 15: total_reward = 250 + (50 * (maps_discovered - 10))
+        # else: total_reward = 500 + (75 * (maps_discovered - 15))
 
         return total_reward
 
@@ -1352,7 +1348,7 @@ class RedGymEnv(Env):
         return max(
             sum([
                 self.bit_count(self.read_m(i))
-                for i in range(event_flags_start, event_flags_end)
+                for i in range(event_flags_start, event_flags_reward_end)
             ])
             - self.base_event_flags
             - int(self.read_bit(museum_ticket[0], museum_ticket[1])),
@@ -1364,7 +1360,7 @@ class RedGymEnv(Env):
         if not hasattr(self, 'base_event_flags'):
             self.base_event_flags = sum([
                 self.bit_count(self.read_m(i))
-                for i in range(event_flags_start, event_flags_end)
+                for i in range(event_flags_start, event_flags_reward_end)
             ])
 
         # Update rewards that change infrequently
