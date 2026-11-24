@@ -74,9 +74,13 @@ def badge(env, bit):
 
 
 def out_of_mt_moon(env):
-    # Route 4 shares one map on both sides of Mt. Moon, so "out" means: back on
-    # Route 4 after having been on the deepest floor (B2F), whose exit leads east.
-    return on_map(env, 0x0F) and getattr(env, "_ms_seen_mt_moon_b2f", False)
+    # Route 4 is one map on both sides of Mt. Moon. The west part (Pokemon Center
+    # door x=11, cave entrance x=18) is reached from Route 3; the east part starts
+    # at the cave's exit (x=24) and is reachable only through the cave (the ledges
+    # east of it are one-way). The old check (Route 4 after visiting B2F) also fired
+    # for agents that went down to B2F and walked back out the WEST entrance, so the
+    # ladder handed out "through Mt. Moon" saves that were still west of it (Nov 24).
+    return on_map(env, 0x0F) and env.read_m(0xD362) >= 24
 
 
 # (key, label, check). Order = progress order; "newest" = highest index reached.
