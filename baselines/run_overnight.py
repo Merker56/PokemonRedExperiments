@@ -10,6 +10,8 @@ Usage (from the baselines folder, with the venv active):
     python run_overnight.py --hours 9       # stop by itself after ~9 hours
     python run_overnight.py --resume        # continue from the newest checkpoint
     python run_overnight.py --stream        # also show agents on the live map
+    python run_overnight.py --mirror-dir /mnt/c/Users/<you>/Documents/pokered-logs
+                                            # copy logs + check-ins to Windows every 5 min
 
 Everything it does is logged to runs/watchdog.log. Ctrl+C stops it cleanly.
 """
@@ -82,7 +84,18 @@ def main():
     ap.add_argument("--map-name", default=None)
     ap.add_argument("--map-color", default=None)
     ap.add_argument("--map-sprite", type=int, default=None)
+    ap.add_argument("--mirror-dir", default=None,
+                    help="copy logs and check-in reports here every 5 minutes (e.g. a Windows folder under /mnt/c)")
     args = ap.parse_args()
+
+    def do_mirror():
+        if not args.mirror_dir:
+            return
+        try:
+            from log_mirror import mirror
+            mirror(RUNS, args.mirror_dir)
+        except Exception as e:  # copying logs must never stop training
+            log(f"log mirror skipped: {e}")
 
     deadline = time.time() + args.hours * 3600 if args.hours else None
     restarts = 0
@@ -126,9 +139,13 @@ def main():
         proc = subprocess.Popen(cmd, start_new_session=True)
 
         reason = None
+        last_mirror = 0.0
         try:
             while proc.poll() is None:
                 time.sleep(15)
+                if time.time() - last_mirror >= 300:
+                    do_mirror()
+                    last_mirror = time.time()
                 age = heartbeat_age()
                 fresh = age is not None and (time.time() - age) >= launched
                 if fresh and age > args.stall_minutes * 60:
@@ -141,6 +158,7 @@ def main():
             log("Ctrl+C received, stopping training")
             stop(proc)
             log("=== stopped by user ===")
+            do_mirror()
             return
 
         if reason:
@@ -160,6 +178,7 @@ def main():
         time.sleep(20)
 
     log(f"=== overnight run ended after {restarts} restart(s) ===")
+    do_mirror()
 
 
 if __name__ == "__main__":
