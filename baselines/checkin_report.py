@@ -214,7 +214,7 @@ class CheckinReportCallback(BaseCallback):
                 behind = (f" That was {(timesteps - b['timesteps']) / 1e6:.0f}M steps ago; the agents "
                           "haven't beaten it since.")
             parts.append(f"<p>Best policy so far saved at {b['timesteps']:,} steps ({e(b['time'][5:16])}): "
-                         f"the average agent reached milestone {b['milestone_mean']:.1f}.{behind} "
+                         f"the average agent reached {b.get('score', 0):.1f} new milestones per game.{behind} "
                          "<small>runs/best/best_model.zip</small></p>")
         return "\n".join(parts)
 

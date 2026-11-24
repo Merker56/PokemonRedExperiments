@@ -36,9 +36,12 @@ REWARDS = {
     "new_map":           2,    # each new map (town, route, building). Was April's escalating 20/30/50/75,
                                # which made maps ~70% of all points at Vermilion (Nov 23)
     # revisit: April's get_revisit_penalty + get_immediate_revisit_penalty
-    "level":             1,    # team levels (see get_levels_reward)
+    "level":             3,    # per level of the team's 3 strongest Pokemon (see get_levels_reward).
+                               # Was 1 per level summed over every kind ever owned, so catching new
+                               # kinds used up the level points and Bulbasaur stayed L6 (Nov 23)
     "caught":            2,    # each Pokemon caught
-    "heal":             10,    # healing at a Pokemon Center
+    "heal":             10,    # first heal at each Pokemon Center, once per center (it sets the
+                               # respawn point). Was 10 x HP healed, every time (Nov 23)
     "death":         -0.01,    # each time the team faints
     "menu":           0.01,    # opening each start-menu screen once
     # --- added since April ---
@@ -434,7 +437,8 @@ class RedGymEnv(Env):
         self.max_level_rew = 0
         self.last_health = 1
         self.last_power = 0
-        self.total_healing_rew = 0
+        self.total_healing_rew = 0      # Pokemon Centers used for the first time this episode
+        self.centers_used = None        # filled from the start state on the first step
         self.total_healing_pp_rew = 0
         self.died_count = 0
         self.party_size = 0
@@ -1164,7 +1168,10 @@ class RedGymEnv(Env):
         ## Storing the level for each unique pokemon in the party throughout the game
         current_party_levels = [self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]
         current_party_names = [self.read_m(a) for a in [0xD164, 0xD165, 0xD166, 0xD167, 0xD168, 0xD169]]
-        for i in range(6):
+        # Only real party slots: empty slots hold 0xFF/leftover bytes, not Pokemon
+        for i in range(min(self.read_m(0xD163), 6)):
+            if current_party_names[i] in (0, 0xFF):
+                continue
             if current_party_names[i] in self.pokemon_levels:
                 self.pokemon_levels[current_party_names[i]] = max(current_party_levels[i], self.pokemon_levels[current_party_names[i]])
             else:
@@ -1252,13 +1259,12 @@ class RedGymEnv(Env):
         ## Do this by taking the max for each pokemon encountered
         self.store_pokemon_levels()
         self.update_pokemon_info()
-        level_sum = sum(self.pokemon_levels.values()) - 6
-        if level_sum < 20:
-            scaled = level_sum 
-        elif level_sum < 40:
-            scaled = 20 + ((level_sum - 20) / 2)
-        else:
-            scaled = 30 + ((level_sum - 40) / 4)
+        # The 3 strongest kinds (each at its best level), minus the starter's 6. A weak
+        # new catch adds nothing once three stronger Pokemon exist. Full value up to 90
+        # levels above the start (three Pokemon around L36), half after that.
+        top3 = sorted(self.pokemon_levels.values(), reverse=True)[:3]
+        level_sum = max(sum(top3) - 6, 0)
+        scaled = level_sum if level_sum <= 90 else 90 + (level_sum - 90) / 2
         self.max_level_rew = max(self.max_level_rew, scaled)
         return self.max_level_rew
 
@@ -1435,15 +1441,20 @@ class RedGymEnv(Env):
         return self.max_event_rew
 
     def update_heal_reward(self, cur_health):
-        x_pos, y_pos, map_n = self.get_game_coords()
+        # Pays once per Pokemon Center: the nurse sets wLastBlackoutMap (0xD719, where you
+        # respawn after losing) to her town. Each new town there this episode = one heal
+        # reward, whatever the HP was. The start state's respawn town doesn't count.
+        respawn = self.read_m(0xD719)
+        if self.centers_used is None:
+            self.centers_used = {respawn}
+        elif respawn not in self.centers_used:
+            self.centers_used.add(respawn)
+            self.total_healing_rew += 1
         if self.read_m(0xD163) == self.party_size:
             # if health increased and party size did not change
             if cur_health > self.last_health:
                     if self.last_health > 0:
-                        if map_n in [41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 182]:
-                            # Make sure in pokemon center
-                            heal_amount = cur_health - self.last_health
-                            self.total_healing_rew += heal_amount
+                        pass  # healing itself no longer pays; see the respawn check below
                     else:
                         self.died_count += 1
                         self.last_health = 1

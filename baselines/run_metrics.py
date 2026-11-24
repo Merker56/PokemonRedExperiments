@@ -190,8 +190,9 @@ class RunMetricsCallback(BaseCallback):
         with open(self.runs_dir / "learning.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-        # 3. Best checkpoint (average agent's milestone; badges count for more)
-        score = round(float(milestone.mean()) + 10 * float(badges.mean()), 2)
+        # 3. Best checkpoint: milestones the average agent reached in this episode
+        # (with the ladder, agents start at different milestones, so count new ones only)
+        score = round(float(col("milestones_this_run").mean()), 2)
         if score > self.best_score and time.time() - self.last_save >= self.min_save_gap_s:
             best_dir = self.runs_dir / "best"
             best_dir.mkdir(exist_ok=True)
