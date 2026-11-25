@@ -500,6 +500,8 @@ class RedGymEnv(Env):
     def init_map_mem(self):
         self.seen_coords = {}
         self.inherited_tiles = 0
+        self.rewarded_tiles = 0           # new tiles that count for the "exp" reward
+        self.no_tile_reward_maps = set()  # maps where new tiles pay nothing (see apply_lineage)
 
     def apply_lineage(self, coords, maps):
         """Starting from a milestone save: mark everything its line of agents already
@@ -513,6 +515,12 @@ class RedGymEnv(Env):
                 self.explore_map[gy, gx] = 255
         self.maps_visited.update(int(m) for m in maps.tolist())
         self.inherited_tiles = len(self.seen_coords)
+        # The fastest route to a milestone is a thin path, so the towns behind it
+        # still have thousands of unwalked tiles. Agents started past Mt. Moon walked
+        # back to Pallet for those (~1,600 tiles each, Nov 24). New tiles now pay only
+        # on maps this line of agents has never been to, plus the map the save is on.
+        _, _, here = self.get_game_coords()
+        self.no_tile_reward_maps = {int(m) for m in maps.tolist()} - {int(here)}
 
     def full_screen(self):
         """Full-size current screen for check-in reports. (A separate name from
@@ -808,6 +816,8 @@ class RedGymEnv(Env):
         #coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
         # Change self.seen_coords to use tuple keys instead of strings
         coord_key = (x_pos, y_pos, map_n)  # Faster than string formatting
+        if coord_key not in self.seen_coords and map_n not in self.no_tile_reward_maps:
+            self.rewarded_tiles += 1
         self.seen_coords[coord_key] = self.step_count
 
     def find_location_by_id(self, map_data, location_id):
@@ -1409,7 +1419,7 @@ class RedGymEnv(Env):
             "dead": k * self.died_count * R["death"],
             "badge": k * self.get_badges() * R["badge"],
             "milestone": k * milestones_reached * R["milestone"],
-            "exp": k * len(self.seen_coords) * R["new_tile"],
+            "exp": k * self.rewarded_tiles * R["new_tile"],
             "cap": k * pokedex_caught * R["caught"],
             "menu": (self.start_menu_count + self.start_stats_count + self.start_pokemenu_count + self.start_itemmenu_count) * R["menu"],
             # Revisit penalties removed (Nov 21): their +/-5 swings drowned out the new-tile
