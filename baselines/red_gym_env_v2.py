@@ -518,9 +518,14 @@ class RedGymEnv(Env):
         # The fastest route to a milestone is a thin path, so the towns behind it
         # still have thousands of unwalked tiles. Agents started past Mt. Moon walked
         # back to Pallet for those (~1,600 tiles each, Nov 24). New tiles now pay only
-        # on maps this line of agents has never been to, plus the map the save is on.
+        # on maps this line of agents has never been to, plus where the save is:
+        # its own map AND the outdoor map around it (wLastMap, 0xD365, the map you
+        # return to when leaving a building). Without the second, agents saved in
+        # Cerulean Gym got nothing for exploring Cerulean City and never found its
+        # exits (Nov 26).
         _, _, here = self.get_game_coords()
-        self.no_tile_reward_maps = {int(m) for m in maps.tolist()} - {int(here)}
+        around = self.read_m(0xD365)
+        self.no_tile_reward_maps = {int(m) for m in maps.tolist()} - {int(here), int(around)}
 
     def full_screen(self):
         """Full-size current screen for check-in reports. (A separate name from
