@@ -40,8 +40,10 @@ REWARDS = {
                                # Was 1 per level summed over every kind ever owned, so catching new
                                # kinds used up the level points and Bulbasaur stayed L6 (Nov 23)
     "caught":            2,    # each Pokemon caught
-    "heal":             10,    # first heal at each Pokemon Center, once per center (it sets the
-                               # respawn point). Was 10 x HP healed, every time (Nov 23)
+    "heal":             30,    # first heal at each Pokemon Center, once per center (it sets the
+                               # respawn point). Was 10 x HP healed, every time (Nov 23); raised
+                               # 10 -> 30 (Nov 27) because the fastest ladder route skipped healing
+                               # and every loss on the S.S. Anne sent agents back to Mt. Moon
     "death":         -0.01,    # each time the team faints
     "menu":           0.01,    # opening each start-menu screen once
     # --- added since April ---
