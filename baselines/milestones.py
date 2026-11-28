@@ -296,6 +296,12 @@ class MilestoneTracker:
         except Exception:
             return False
 
+    def _out_of_battle(self):
+        try:
+            return self.env.read_m(IS_IN_BATTLE) == 0
+        except Exception:
+            return False
+
     def good_moment(self):
         e = self.env
         try:
@@ -323,8 +329,18 @@ class MilestoneTracker:
                 self.done.add(i)
                 self.pending.pop(i, None)
             elif e.step_count - self.pending[i] > self.QUALITY_PATIENCE:
-                self.done.add(i)          # never got a good moment; skip this one
-                self.pending.pop(i, None)
+                # No healthy moment in time. Save anyway at the first moment out of
+                # battle: a weak start beats no start. (Nov 27: the only agent to get
+                # HM01 never got back above half HP, so the save was skipped and the
+                # ladder never got past the S.S. Anne.) Give up only if it stays in
+                # battle for a very long time.
+                if self._out_of_battle():
+                    self._save(i, key, label)
+                    self.done.add(i)
+                    self.pending.pop(i, None)
+                elif e.step_count - self.pending[i] > self.QUALITY_PATIENCE * 10:
+                    self.done.add(i)
+                    self.pending.pop(i, None)
 
     def _save(self, i, key, label):
         e = self.env
